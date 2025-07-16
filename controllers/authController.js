@@ -1,4 +1,4 @@
-const Host = require('../models/Host');
+const Host = require('../models/host');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
@@ -118,26 +118,76 @@ exports.signup = async (req, res) => {
     // 7) Send verification email with better template
     const verificationUrl = `${process.env.FRONTEND_URL}/verified-email/${verificationToken}`;
     const mailOptions = {
-      from: `"Genpayng" <${process.env.ZOHO_EMAIL}>`,
+      from: `"Genpay Nigeria" <${process.env.ZOHO_EMAIL}>`,
       to: newHost.email,
-      subject: 'Verify Your Genpayng Account',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h1 style="color: #6C63FF;">Welcome to Genpayng!</h1>
-          <p>Thank you for creating an account. Please verify your email address to get started:</p>
-          <a href="${verificationUrl}" 
-             style="display: inline-block; padding: 12px 24px; background-color: #6C63FF; 
-                    color: white; text-decoration: none; border-radius: 4px; margin: 20px 0;">
-            Verify Email
-          </a>
-          <p>This link will expire in 24 hours.</p>
-          <p>If you didn't create this account, please ignore this email.</p>
-          <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
-          <p style="font-size: 12px; color: #777;">
-            © ${new Date().getFullYear()} Genpayng. All rights reserved.
-          </p>
-        </div>
-      `,
+      subject: 'Verify Your Genpay Account',
+ html: `
+<div style="font-family: 'Poppins', sans-serif; max-width: 600px; margin: 0 auto; background-color: #000000; padding: 40px 20px; border-radius:20px;">
+  <!-- Logo Section -->
+  <div style="text-align: center; margin-bottom: 30px;">
+    <img src="https://res.cloudinary.com/dhkzg2gfk/image/upload/v1752669123/genpaylogo_l4sfd7.png" alt="Genpayng Logo" style="max-width: 150px; height: auto; margin-bottom: 20px;" />
+  </div>
+  
+  <!-- Header -->
+  <div style="text-align: center; margin-bottom: 40px;">
+    <h1 style="color: #FFFFFF; margin: 0; font-size: 32px; font-weight: 700; text-shadow: 0 2px 4px rgba(162, 40, 175, 0.3);">
+      Welcome to Genpay!
+    </h1>
+  </div>
+  
+  <!-- Main Content -->
+  <div style="background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%); padding: 40px; border-radius: 20px; box-shadow: 0 8px 32px rgba(162, 40, 175, 0.2); border: 1px solid #333;">
+    <p style="color: #E0E0E0; font-size: 16px; line-height: 1.6; margin-bottom: 24px; font-weight: 400;">
+      Thank you for creating an account with us! We're excited to have you on board. Please verify your email address to get started and unlock all the amazing features Genpayng has to offer.
+    </p>
+    
+    <!-- CTA Button -->
+    <div style="text-align: center; margin: 40px 0;">
+      <a href="${verificationUrl}" 
+         style="display: inline-block; 
+                padding: 16px 32px; 
+                background: linear-gradient(90deg, #A228AF 0%, #FF0000 100%);
+                color: white; 
+                text-decoration: none; 
+                border-radius: 10px 10px 10px 0px;
+                font-family: 'Poppins', sans-serif;
+                font-weight: 600;
+                font-size: 16px;
+                letter-spacing: 0.5px;
+                text-transform: uppercase;
+                box-shadow: 0 4px 15px rgba(162, 40, 175, 0.4);">
+        ✨ Verify Email Address
+      </a>
+    </div>
+    
+    <!-- Security Notice -->
+    <div style="background: rgba(162, 40, 175, 0.1); padding: 20px; border-radius: 12px; border-left: 4px solid #A228AF; margin: 30px 0;">
+      <p style="color: #FFFFFF; font-size: 14px; margin: 0; font-weight: 500;">
+        🔒 <strong>Security Notice:</strong> This verification link will expire in 24 hours for your security.
+      </p>
+    </div>
+    
+    <p style="color: #B0B0B0; font-size: 14px; line-height: 1.5; margin-bottom: 0;">
+      If you didn't create this account, please ignore this email. Your account will remain inactive until verified.
+    </p>
+  </div>
+  
+  <!-- Footer -->
+  <div style="margin-top: 40px; padding-top: 30px; border-top: 1px solid #333;">
+    <div style="text-align: center;">
+      <p style="color: #666; font-size: 12px; margin: 0; font-weight: 300;">
+        © ${new Date().getFullYear()} Genpay Nigeria. All rights reserved.
+      </p>
+      <p style="color: #555; font-size: 11px; margin: 10px 0 0 0;">
+        Need help? Contact our support team at support@genpay.ng
+      </p>
+    </div>
+  </div>
+  
+  <!-- Decorative Elements -->
+  <div style="width: 100%; height: 2px; background: linear-gradient(90deg, #A228AF 0%, #FF0000 100%); margin-bottom: 20px;"></div>
+</div>
+`,
       text: `Please verify your email by visiting this link: ${verificationUrl}\n\nThis link expires in 24 hours.`
     };
 
@@ -283,10 +333,76 @@ exports.resendVerification = async (req, res) => {
 
     const verificationUrl = `${process.env.FRONTEND_URL}/verified-email/${verificationToken}`;
     const mailOptions = {
-      from: `"Genpayng" <${process.env.ZOHO_EMAIL}>`,
+      from: `"Genpay Nigeria" <${process.env.ZOHO_EMAIL}>`,
       to: host.email,
-      subject: 'Verify Your Genpayng Account',
-      html: `Click to verify: <a href="${verificationUrl}">${verificationUrl}</a>`,
+      subject: 'Verify Your Genpay Nigeria Account',
+       html: `
+<div style="font-family: 'Poppins', sans-serif; max-width: 600px; margin: 0 auto; background-color: #000000; padding: 40px 20px; border-radius:20px;">
+  <!-- Logo Section -->
+  <div style="text-align: center; margin-bottom: 30px;">
+    <img src="https://res.cloudinary.com/dhkzg2gfk/image/upload/v1752669123/genpaylogo_l4sfd7.png" alt="Genpayng Logo" style="max-width: 150px; height: auto; margin-bottom: 20px;" />
+  </div>
+  
+  <!-- Header -->
+  <div style="text-align: center; margin-bottom: 40px;">
+    <h1 style="color: #FFFFFF; margin: 0; font-size: 32px; font-weight: 700; text-shadow: 0 2px 4px rgba(162, 40, 175, 0.3);">
+      Welcome to Genpay!
+    </h1>
+  </div>
+  
+  <!-- Main Content -->
+  <div style="background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%); padding: 40px; border-radius: 20px; box-shadow: 0 8px 32px rgba(162, 40, 175, 0.2); border: 1px solid #333;">
+    <p style="color: #E0E0E0; font-size: 16px; line-height: 1.6; margin-bottom: 24px; font-weight: 400;">
+      Thank you for creating an account with us! We're excited to have you on board. Please verify your email address to get started and unlock all the amazing features Genpayng has to offer.
+    </p>
+    
+    <!-- CTA Button -->
+    <div style="text-align: center; margin: 40px 0;">
+      <a href="${verificationUrl}" 
+         style="display: inline-block; 
+                padding: 16px 32px; 
+                background: linear-gradient(90deg, #A228AF 0%, #FF0000 100%);
+                color: white; 
+                text-decoration: none; 
+                border-radius: 10px 10px 10px 0px;
+                font-family: 'Poppins', sans-serif;
+                font-weight: 600;
+                font-size: 16px;
+                letter-spacing: 0.5px;
+                text-transform: uppercase;
+                box-shadow: 0 4px 15px rgba(162, 40, 175, 0.4);">
+        ✨ Verify Email Address
+      </a>
+    </div>
+    
+    <!-- Security Notice -->
+    <div style="background: rgba(162, 40, 175, 0.1); padding: 20px; border-radius: 12px; border-left: 4px solid #A228AF; margin: 30px 0;">
+      <p style="color: #FFFFFF; font-size: 14px; margin: 0; font-weight: 500;">
+        🔒 <strong>Security Notice:</strong> This verification link will expire in 24 hours for your security.
+      </p>
+    </div>
+    
+    <p style="color: #B0B0B0; font-size: 14px; line-height: 1.5; margin-bottom: 0;">
+      If you didn't create this account, please ignore this email. Your account will remain inactive until verified.
+    </p>
+  </div>
+  
+  <!-- Footer -->
+  <div style="margin-top: 40px; padding-top: 30px; border-top: 1px solid #333;">
+    <div style="text-align: center;">
+      <p style="color: #666; font-size: 12px; margin: 0; font-weight: 300;">
+        © ${new Date().getFullYear()} Genpay Nigeria. All rights reserved.
+      </p>
+      <p style="color: #555; font-size: 11px; margin: 10px 0 0 0;">
+        Need help? Contact our support team at support@genpay.ng
+      </p>
+    </div>
+  </div>
+  
+  <!-- Decorative Elements -->
+  <div style="width: 100%; height: 2px; background: linear-gradient(90deg, #A228AF 0%, #FF0000 100%); margin-bottom: 20px;"></div>
+</div>
+`,
     };
 
     await transporter.sendMail(mailOptions);
