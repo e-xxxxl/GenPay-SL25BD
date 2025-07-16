@@ -116,7 +116,7 @@ exports.signup = async (req, res) => {
     );
 
     // 7) Send verification email with better template
-    const verificationUrl = `${process.env.FRONTEND_URL}/verified-email/${verificationToken}`;
+    const verificationUrl = `${process.env.SECOND_FRONTEND_URL}/verified-email/${verificationToken}`;
     const mailOptions = {
       from: `"Genpay Nigeria" <${process.env.ZOHO_EMAIL}>`,
       to: newHost.email,
@@ -331,7 +331,7 @@ exports.resendVerification = async (req, res) => {
       { expiresIn: '24h' }
     );
 
-    const verificationUrl = `${process.env.FRONTEND_URL}/verified-email/${verificationToken}`;
+    const verificationUrl = `${process.env.SECOND_FRONTEND_URL}/verified-email/${verificationToken}`;
     const mailOptions = {
       from: `"Genpay Nigeria" <${process.env.ZOHO_EMAIL}>`,
       to: host.email,
