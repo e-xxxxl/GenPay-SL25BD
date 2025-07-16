@@ -8,10 +8,29 @@ const app = express();
 // ======================
 // 1. Middleware Setup
 // ======================
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  process.env.SECOND_FRONTEND_URL,
+  'http://localhost:5173',
+  'https://genpaysl.vercel.app' // Add other dev URLs as needed
+].filter(Boolean);
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173', // Lock down CORS in production
-  credentials: true // Enable cookies/auth headers if needed
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  optionsSuccessStatus: 200
 }));
+
+
 app.use(express.json()); // Parse JSON bodies
 app.use(express.urlencoded({ extended: true })); // Parse URL-encoded forms
 
@@ -24,7 +43,7 @@ connectDB();
 // 3. Routes (Example)
 // ======================
 app.get('/', (req, res) => {
-  res.json({ message: 'Event Ticketing API' });
+  res.json({ message: 'GENPAY NIGERIA' });
 });
 const authRouter = require('./routes/authRoutes');
 app.use('/api/auth', authRouter);
