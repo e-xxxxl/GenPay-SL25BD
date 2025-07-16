@@ -84,8 +84,8 @@ exports.signup = async (req, res) => {
     }
 
     // 4) Hash password
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(req.body.password, salt);
+
+    const hashedPassword = req.body.password;
 
     // 5) Create host with additional validation
     const hostData = {
@@ -295,5 +295,131 @@ exports.resendVerification = async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ status: 'error', message: 'Server error' });
+  }
+};
+
+
+exports.login = async (req, res) => {
+  try {
+    // 1) Validate required fields
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Please provide both email and password.'
+      });
+    }
+
+    // 2) Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Please provide a valid email address.',
+        field: 'email'
+      });
+    }
+
+// 3) Find host by email and include password
+const host = await Host.findOne({ email: email.toLowerCase() }).select('+password');
+
+if (!host) {
+  return res.status(401).json({
+    status: 'fail',
+    message: 'Invalid email or password.'
+  });
+}
+    // 4) Compare passwords
+    const isMatch = await bcrypt.compare(password, host.password);
+
+    if (!isMatch) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'Invalid email or password.'
+      });
+    }
+
+    // 5) Generate JWT auth token
+    const authToken = jwt.sign(
+      { id: host._id },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    // 6) Prepare response data
+    const responseData = {
+      _id: host._id,
+      userType: host.userType,
+      email: host.email,
+      ...(host.userType === 'individual'
+        ? { firstName: host.firstName, lastName: host.lastName }
+        : { organizationName: host.organizationName, fullName: host.fullName }),
+      phoneNumber: host.phoneNumber,
+      location: host.location,
+      isVerified: host.isVerified
+    };
+
+    // 7) Return success
+    res.status(200).json({
+      status: 'success',
+      token: authToken,
+      data: {
+        host: responseData
+      },
+      isVerified: host.isVerified,
+      message: 'Login successful.'
+    });
+
+  } catch (err) {
+    console.error('Login error:', err);
+    res.status(500).json({
+      status: 'error',
+      message: 'An unexpected error occurred. Please try again later.'
+    });
+  }
+};
+
+
+// Authentication Middleware
+exports.protect = async (req, res, next) => {
+  try {
+    // 1) Getting token and check if it's there
+    let token;
+    if (
+      req.headers.authorization &&
+      req.headers.authorization.startsWith('Bearer')
+    ) {
+      token = req.headers.authorization.split(' ')[1];
+    }
+
+    if (!token) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'You are not logged in! Please log in to get access'
+      });
+    }
+
+    // 2) Verification token
+    const decoded = await jwt.verify(token, process.env.JWT_SECRET);
+
+    // 3) Check if user still exists
+    const currentHost = await Host.findById(decoded.id);
+    if (!currentHost) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'The user belonging to this token no longer exists'
+      });
+    }
+
+    // 4) Grant access to protected route
+    req.user = currentHost;
+    next();
+  } catch (err) {
+    console.error('Authentication error:', err);
+    res.status(401).json({
+      status: 'fail',
+      message: 'Invalid token. Please log in again'
+    });
   }
 };

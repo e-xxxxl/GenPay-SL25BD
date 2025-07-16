@@ -12,10 +12,22 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// Login rate limiter (5 attempts per 15 minutes)
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20,
+  message: 'Too many login attempts from this IP, please try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+
 // Public routes
 router.post('/signup', authLimiter, authController.signup);
 router.get('/verify-email/:token', authLimiter, authController.verifyEmail);
 router.post('/resend-verification', authLimiter, authController.resendVerification);
+router.post('/login', loginLimiter, authController.login);
+// router.get('/dashboard', authController.protect, dashboardController);
 // router.post('/login', authLimiter, authController.login);
 // router.post('/forgot-password', authLimiter, authController.forgotPassword);
 // router.patch('/reset-password/:token', authLimiter, authController.resetPassword);
