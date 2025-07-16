@@ -539,3 +539,157 @@ exports.protect = async (req, res, next) => {
     });
   }
 };
+
+
+exports.forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    // 1) Validate email presence & format
+    if (!email) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Please provide your email address'
+      });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Please provide a valid email address'
+      });
+    }
+
+    // 2) Check if user exists
+    const user = await Host.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res.status(404).json({
+        status: 'fail',
+        message: 'No account found with that email'
+      });
+    }
+
+    // 3) Generate reset token
+    const resetToken = jwt.sign(
+      { id: user._id },
+      process.env.JWT_RESET_SECRET,
+      { expiresIn: '1h' } // Token expires in 1 hour
+    );
+
+    // Optionally, store reset token in DB with expiry if you want to
+    user.passwordResetToken = resetToken;
+    user.passwordResetExpires = Date.now() + 60 * 60 * 1000; // 1 hour
+    await user.save({ validateBeforeSave: false });
+
+    // 4) Send email
+    const resetUrl = `${process.env.SECOND_FRONTEND_URL}/reset-password/${resetToken}`;
+
+   const mailOptions = {
+  from: `"GenPayng" <${process.env.ZOHO_EMAIL}>`,
+  to: user.email,
+  subject: 'Password Reset Request',
+  html: `
+    <div style="font-family: 'Poppins', Arial, sans-serif; max-width: 600px; margin: 0 auto; background-color: #0f0f0f; color: #ffffff; padding: 30px; border-radius: 8px;">
+      <div style="text-align: center; margin-bottom: 30px;">
+        <h1 style="color: #ffffff; margin-bottom: 20px; font-size: 24px;">Reset Your Password</h1>
+        <div style="background: linear-gradient(135deg, #A228AF 0%, #FF0000 100%); width: 60px; height: 4px; margin: 0 auto;"></div>
+      </div>
+      
+      <p style="margin-bottom: 20px;">You requested to reset your password for your GenPayng account.</p>
+      
+      <p style="margin-bottom: 30px;">Click the button below to set a new password:</p>
+      
+      <div style="text-align: center; margin-bottom: 30px;">
+        <a href="${resetUrl}"
+           style="display: inline-block; padding: 12px 30px; 
+                  background: linear-gradient(135deg, #A228AF 0%, #FF0000 100%); 
+                  color: white; text-decoration: none; border-radius: 15px 15px 15px 0px;
+                  font-weight: 500; font-size: 16px;">
+          Reset Password
+        </a>
+      </div>
+      
+      <p style="margin-bottom: 10px; font-size: 12px; color: #aaaaaa;">
+        This link will expire in 1 hour. If you didn't request this, please ignore this email.
+      </p>
+      
+      <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #333333; text-align: center;">
+        <p style="font-size: 12px; color: #777777;">
+          © ${new Date().getFullYear()} GenPayng. All rights reserved.
+        </p>
+      </div>
+    </div>
+  `,
+  text: `Reset your password by visiting this link: ${resetUrl}\n\nThis link expires in 1 hour.`
+};
+    await transporter.sendMail(mailOptions);
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Password reset link sent to your email'
+    });
+
+  } catch (err) {
+    console.error('Forgot password error:', err);
+
+    res.status(500).json({
+      status: 'error',
+      message: 'An unexpected error occurred. Please try again later.'
+    });
+  }
+};
+
+
+
+exports.resetPassword = async (req, res) => {
+  try {
+    const { token, newPassword } = req.body;
+
+    // 1) Verify token
+    const decoded = jwt.verify(token, process.env.JWT_RESET_SECRET);
+    
+    // 2) Find user by ID from token
+    const user = await Host.findById(decoded.id);
+    if (!user) {
+      return res.status(404).json({
+        status: 'fail',
+        message: 'User not found'
+      });
+    }
+
+    // 3) Check if token matches and isn't expired
+    if (user.passwordResetToken !== token || user.passwordResetExpires < Date.now()) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Token is invalid or has expired'
+      });
+    }
+
+    // 4) Update password
+    user.password = newPassword;
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+    await user.save();
+
+    // 5) Send success response
+    res.status(200).json({
+      status: 'success',
+      message: 'Password updated successfully'
+    });
+
+  } catch (err) {
+    if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'Token is invalid or has expired'
+      });
+    }
+    
+    console.error('Reset password error:', err);
+    res.status(500).json({
+      status: 'error',
+      message: 'An error occurred while resetting password'
+    });
+  }
+};

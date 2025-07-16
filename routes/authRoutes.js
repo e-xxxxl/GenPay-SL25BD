@@ -27,6 +27,8 @@ router.post('/signup', authLimiter, authController.signup);
 router.get('/verify-email/:token', authLimiter, authController.verifyEmail);
 router.post('/resend-verification', authLimiter, authController.resendVerification);
 router.post('/login', loginLimiter, authController.login);
+router.post('/forgot-password', authController.forgotPassword);
+router.post('/reset-password', authController.resetPassword);
 // router.get('/dashboard', authController.protect, dashboardController);
 // router.post('/login', authLimiter, authController.login);
 // router.post('/forgot-password', authLimiter, authController.forgotPassword);
