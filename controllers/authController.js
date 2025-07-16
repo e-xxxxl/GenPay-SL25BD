@@ -646,43 +646,53 @@ exports.resetPassword = async (req, res) => {
   try {
     const { token, newPassword } = req.body;
 
-    // 1) Verify token
-    const decoded = jwt.verify(token, process.env.JWT_RESET_SECRET);
-    
-    // 2) Find user by ID from token
-    const user = await Host.findById(decoded.id);
-    if (!user) {
-      return res.status(404).json({
+    if (!token || !newPassword) {
+      return res.status(400).json({
         status: 'fail',
-        message: 'User not found'
+        message: 'Token and new password are required'
       });
     }
 
-    // 3) Check if token matches and isn't expired
-    if (user.passwordResetToken !== token || user.passwordResetExpires < Date.now()) {
-      return res.status(400).json({
+    // 1) Verify token without checking database first
+    const decoded = jwt.verify(token, process.env.JWT_RESET_SECRET);
+    
+    // 2) Find user and verify token match
+    const user = await Host.findOne({
+      _id: decoded.id,
+      passwordResetToken: token,
+      passwordResetExpires: { $gt: Date.now() }
+    });
+
+    if (!user) {
+      return res.status(401).json({
         status: 'fail',
         message: 'Token is invalid or has expired'
       });
     }
 
-    // 4) Update password
+    // 3) Update password
     user.password = newPassword;
     user.passwordResetToken = undefined;
     user.passwordResetExpires = undefined;
     await user.save();
 
-    // 5) Send success response
+    // 4) Send success response
     res.status(200).json({
       status: 'success',
       message: 'Password updated successfully'
     });
 
   } catch (err) {
-    if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
+    if (err.name === 'JsonWebTokenError') {
       return res.status(401).json({
         status: 'fail',
-        message: 'Token is invalid or has expired'
+        message: 'Invalid token'
+      });
+    }
+    if (err.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'Token has expired'
       });
     }
     
