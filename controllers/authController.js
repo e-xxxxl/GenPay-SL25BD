@@ -703,3 +703,45 @@ exports.resetPassword = async (req, res) => {
     });
   }
 };
+
+
+// Get current user details
+exports.getMe = async (req, res) => {
+  try {
+    // User is already available from the protect middleware
+    const user = req.user;
+    
+    // Prepare response data based on user type
+    const responseData = {
+      _id: user._id,
+      userType: user.userType,
+      email: user.email,
+      ...(user.userType === 'individual'
+        ? { 
+            firstName: user.firstName, 
+            lastName: user.lastName,
+            fullName: `${user.firstName} ${user.lastName}`
+          }
+        : { 
+            organizationName: user.organizationName,
+            fullName: user.fullName 
+          }),
+      phoneNumber: user.phoneNumber,
+      location: user.location,
+      isVerified: user.isVerified
+    };
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        user: responseData
+      }
+    });
+  } catch (err) {
+    console.error('Get user error:', err);
+    res.status(500).json({
+      status: 'error',
+      message: 'An unexpected error occurred.'
+    });
+  }
+};
