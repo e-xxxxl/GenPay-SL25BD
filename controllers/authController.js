@@ -745,3 +745,166 @@ exports.getMe = async (req, res) => {
     });
   }
 };
+
+
+
+
+exports.updateProfile = async (req, res) => {
+  try {
+    const user = req.user;
+    const updates = req.body;
+
+    // Validate required fields based on user type
+    if (!updates.firstName) {
+      return res.status(400).json({
+        status: 'fail',
+        message: updates.userType === 'individual' 
+          ? 'First name is required' 
+          : 'Brand name is required',
+        field: 'firstName'
+      });
+    }
+
+    if (updates.userType === 'individual' && !updates.lastName) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Last name is required',
+        field: 'lastName'
+      });
+    }
+
+    if (updates.userType === 'organization' && !updates.fullName) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Full name is required',
+        field: 'fullName'
+      });
+    }
+
+    // Email validation
+    if (updates.email) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(updates.email)) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Please provide a valid email address',
+          field: 'email'
+        });
+      }
+
+      // Check if email is already taken by another user
+      const existingUser = await Host.findOne({ 
+        email: updates.email.toLowerCase(),
+        _id: { $ne: user._id }
+      });
+
+      if (existingUser) {
+        return res.status(409).json({
+          status: 'fail',
+          message: 'Email is already in use',
+          field: 'email'
+        });
+      }
+    }
+
+    // Phone number validation
+    if (updates.phoneNumber) {
+      const existingPhone = await Host.findOne({
+        phoneNumber: updates.phoneNumber,
+        _id: { $ne: user._id }
+      });
+
+      if (existingPhone) {
+        return res.status(409).json({
+          status: 'fail',
+          message: 'Phone number is already in use',
+          field: 'phoneNumber'
+        });
+      }
+    }
+
+    // Prepare update object based on user type
+    const updateData = {
+      email: updates.email || user.email,
+      phoneNumber: updates.phoneNumber || user.phoneNumber,
+      location: updates.location || user.location,
+      ...(user.userType === 'individual'
+        ? {
+            firstName: updates.firstName,
+            lastName: updates.lastName
+          }
+        : {
+            organizationName: updates.firstName, // Note: frontend sends as firstName for both types
+            fullName: updates.fullName
+          })
+    };
+
+    // Update user in database
+    const updatedUser = await Host.findByIdAndUpdate(
+      user._id,
+      updateData,
+      { new: true, runValidators: true }
+    );
+
+    // Prepare response
+    const responseData = {
+      _id: updatedUser._id,
+      userType: updatedUser.userType,
+      email: updatedUser.email,
+      ...(updatedUser.userType === 'individual'
+        ? { 
+            firstName: updatedUser.firstName, 
+            lastName: updatedUser.lastName,
+            fullName: `${updatedUser.firstName} ${updatedUser.lastName}`
+          }
+        : { 
+            organizationName: updatedUser.organizationName,
+            fullName: updatedUser.fullName 
+          }),
+      phoneNumber: updatedUser.phoneNumber,
+      location: updatedUser.location,
+      isVerified: updatedUser.isVerified
+    };
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        user: responseData
+      },
+      message: 'Profile updated successfully'
+    });
+
+  } catch (err) {
+    console.error('Update profile error:', err);
+    
+    // Handle validation errors
+    if (err.name === 'ValidationError') {
+      const errors = Object.values(err.errors).map(el => ({
+        field: el.path,
+        message: el.message
+      }));
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Validation failed',
+        errors: errors
+      });
+    }
+
+    // Handle duplicate field errors
+    if (err.code === 11000) {
+      const field = Object.keys(err.keyPattern)[0];
+      const fieldName = field === 'email' ? 'Email address' : 
+                       field === 'phoneNumber' ? 'Phone number' : field;
+      return res.status(409).json({
+        status: 'fail',
+        message: `${fieldName} is already in use`,
+        field: field
+      });
+    }
+
+    res.status(500).json({
+      status: 'error',
+      message: 'An unexpected error occurred. Please try again later.'
+    });
+  }
+};

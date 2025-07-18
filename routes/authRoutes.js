@@ -30,6 +30,7 @@ router.post('/login', loginLimiter, authController.login);
 router.post('/forgot-password', authController.forgotPassword);
 router.post('/reset-password', authController.resetPassword);
 router.get('/me', authController.protect, authController.getMe);
+router.put('/update-profile', authController.protect, authController.updateProfile);
 // router.get('/dashboard', authController.protect, dashboardController);
 // router.post('/login', authLimiter, authController.login);
 // router.post('/forgot-password', authLimiter, authController.forgotPassword);
