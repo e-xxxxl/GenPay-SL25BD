@@ -908,3 +908,144 @@ exports.updateProfile = async (req, res) => {
     });
   }
 };
+
+
+exports.sendSupportMessage = async (req, res) => {
+  try {
+    const { firstName, lastName, email, issueCategory, message } = req.body;
+
+    // Basic validation
+    if (!firstName || !lastName || !email || !issueCategory || !message) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'All fields are required'
+      });
+    }
+
+    // Email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Please provide a valid email address',
+        field: 'email'
+      });
+    }
+
+    // Create email content
+    const mailOptions = {
+      from: `"Genpay Nigeria Support" <${process.env.ZOHO_EMAIL}>`,
+      to: 'support@genpay.ng',
+      subject: `New Support Request: ${issueCategory} - ${firstName} ${lastName}`,
+      html: `
+        <div style="font-family: 'Poppins', sans-serif; max-width: 600px; margin: 0 auto; background-color: #0f0f0f; color: #ffffff; padding: 30px; border-radius: 8px;">
+          <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="color: #ffffff; margin-bottom: 20px; font-size: 24px;">New Support Request</h1>
+            <div style="background: linear-gradient(135deg, #A228AF 0%, #FF0000 100%); width: 60px; height: 4px; margin: 0 auto;"></div>
+          </div>
+          
+          <div style="margin-bottom: 20px;">
+            <p><strong>From:</strong> ${firstName} ${lastName}</p>
+            <p><strong>Email:</strong> ${email}</p>
+            <p><strong>Category:</strong> ${issueCategory}</p>
+            <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
+          </div>
+          
+          <div style="background: rgba(162, 40, 175, 0.1); padding: 20px; border-radius: 8px; border-left: 4px solid #A228AF;">
+            <p style="margin: 0;"><strong>Message:</strong></p>
+            <p style="margin-top: 10px; white-space: pre-line;">${message}</p>
+          </div>
+          
+          <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #333333; text-align: center;">
+            <p style="font-size: 12px; color: #777777;">
+              © ${new Date().getFullYear()} Genpay Nigeria. All rights reserved.
+            </p>
+          </div>
+        </div>
+      `,
+      text: `New support request from ${firstName} ${lastName} (${email}):
+      
+Category: ${issueCategory}
+Message:
+${message}
+      
+Received: ${new Date().toLocaleString()}
+      `
+    };
+
+    // Send email
+    await transporter.sendMail(mailOptions);
+
+    // Send confirmation email to user
+    const userMailOptions = {
+      from: `"Genpay Nigeria Support" <${process.env.ZOHO_EMAIL}>`,
+      to: email,
+      subject: 'We\'ve received your message',
+      html: `
+        <div style="font-family: 'Poppins', sans-serif; max-width: 600px; margin: 0 auto; background-color: #0f0f0f; color: #ffffff; padding: 30px; border-radius: 8px;">
+          <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="color: #ffffff; margin-bottom: 20px; font-size: 24px;">Thank you for contacting us</h1>
+            <div style="background: linear-gradient(135deg, #A228AF 0%, #FF0000 100%); width: 60px; height: 4px; margin: 0 auto;"></div>
+          </div>
+          
+          <p style="margin-bottom: 20px;">Hello ${firstName},</p>
+          
+          <p style="margin-bottom: 20px;">We've received your message regarding <strong>${issueCategory}</strong> and our support team will get back to you as soon as possible.</p>
+          
+          <div style="background: rgba(162, 40, 175, 0.1); padding: 20px; border-radius: 8px; border-left: 4px solid #A228AF; margin-bottom: 20px;">
+            <p style="margin: 0;"><strong>Your message:</strong></p>
+            <p style="margin-top: 10px; white-space: pre-line;">${message}</p>
+          </div>
+          
+          <p style="margin-bottom: 20px;">For your reference, here are our support details:</p>
+          
+          <ul style="margin-bottom: 20px; padding-left: 20px;">
+            <li>Support Email: support@genpay.ng</li>
+            <li>Business Hours: Mon-Fri 9AM-6PM (WAT)</li>
+            <li>Response Time: Typically within 24 hours</li>
+          </ul>
+          
+          <div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #333333; text-align: center;">
+            <p style="font-size: 12px; color: #777777;">
+              © ${new Date().getFullYear()} Genpay Nigeria. All rights reserved.
+            </p>
+          </div>
+        </div>
+      `,
+      text: `Thank you for contacting Genpay Nigeria support.
+
+We've received your message regarding ${issueCategory} and our team will get back to you soon.
+
+Your message:
+${message}
+
+Support Email: support@genpay.ng
+Business Hours: Mon-Fri 9AM-6PM (WAT)
+
+© ${new Date().getFullYear()} Genpay Nigeria
+      `
+    };
+
+    await transporter.sendMail(userMailOptions);
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Your message has been sent successfully!'
+    });
+
+  } catch (err) {
+    console.error('Error sending support message:', err);
+    
+    if (err.code === 'EENVELOPE' || err.code === 'ECONNECTION') {
+      return res.status(500).json({
+        status: 'error',
+        message: 'Failed to send message. Please try again later.'
+      });
+    }
+
+    res.status(500).json({
+      status: 'error',
+      message: 'An unexpected error occurred. Please try again later.'
+    });
+  }
+};
