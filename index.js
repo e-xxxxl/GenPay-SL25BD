@@ -47,6 +47,9 @@ app.get('/', (req, res) => {
 });
 const authRouter = require('./routes/authRoutes');
 app.use('/api/auth', authRouter);
+
+const eventRoutes = require('./routes/eventRoutes');
+app.use('/api/events', eventRoutes);
 // // Auth Routes
 // app.use('/api/auth', require('./routes/authRoutes'));
 
