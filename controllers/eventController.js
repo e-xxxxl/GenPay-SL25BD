@@ -223,7 +223,6 @@ const upload = multer({
 
 // Upload event image
 exports.uploadEventImage = async (req, res) => {
-  // Wrap Multer middleware in a promise to handle file upload
   upload(req, res, async (err) => {
     try {
       if (err instanceof multer.MulterError) {
@@ -286,23 +285,44 @@ exports.uploadEventImage = async (req, res) => {
         });
       }
 
-      // 3) Validate imageType
-      const { imageType } = req.body;
+      // 3) Validate imageType and eventId
+      const { imageType, eventId } = req.body;
       if (!imageType || imageType !== 'header') {
         return res.status(400).json({
           status: 'fail',
           message: 'Invalid or missing imageType. Must be "header".',
         });
       }
+      if (!eventId) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Event ID is required',
+        });
+      }
 
-      // 4) Upload to Cloudinary
+      // 4) Verify the event exists and belongs to the host
+      const event = await Event.findById(eventId);
+      if (!event) {
+        return res.status(404).json({
+          status: 'fail',
+          message: 'Event not found',
+        });
+      }
+      if (event.host.toString() !== host._id.toString()) {
+        return res.status(403).json({
+          status: 'fail',
+          message: 'You are not authorized to upload images for this event',
+        });
+      }
+
+      // 5) Upload to Cloudinary
       const uploadStream = cloudinary.uploader.upload_stream(
         {
-          folder: 'genpay/events', // Organize images in a folder
+          folder: 'genpay/events',
           public_id: `header_${Date.now()}_${req.file.originalname}`,
           resource_type: 'image',
         },
-        (error, result) => {
+        async (error, result) => {
           if (error) {
             console.error('Cloudinary upload error:', error);
             return res.status(500).json({
@@ -311,15 +331,31 @@ exports.uploadEventImage = async (req, res) => {
             });
           }
 
-          // 5) Return success response
-          res.status(200).json({
-            status: 'success',
-            data: {
-              imageUrl: result.secure_url,
-              uploadId: result.public_id,
-            },
-            message: 'Image uploaded successfully',
-          });
+          // 6) Update the event with the header image URL
+          try {
+            await Event.findByIdAndUpdate(
+              eventId,
+              { headerImage: result.secure_url },
+              { new: true, runValidators: true }
+            );
+
+            // 7) Return success response
+            res.status(200).json({
+              status: 'success',
+              data: {
+                imageUrl: result.secure_url,
+                uploadId: result.public_id,
+                eventId,
+              },
+              message: 'Header image uploaded and saved successfully',
+            });
+          } catch (updateError) {
+            console.error('Event update error:', updateError);
+            return res.status(500).json({
+              status: 'error',
+              message: 'Failed to save image URL to database',
+            });
+          }
         }
       );
 
@@ -335,7 +371,6 @@ exports.uploadEventImage = async (req, res) => {
     }
   });
 };
-
 
 // Upload gallery image
 exports.uploadGalleryImage = async (req, res) => {
@@ -401,24 +436,45 @@ exports.uploadGalleryImage = async (req, res) => {
         });
       }
 
-      // 3) Validate imageType
-      const { imageType } = req.body;
+      // 3) Validate imageType and eventId
+      const { imageType, eventId } = req.body;
       if (!imageType || imageType !== 'gallery') {
         return res.status(400).json({
           status: 'fail',
           message: 'Invalid or missing imageType. Must be "gallery".',
         });
       }
+      if (!eventId) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Event ID is required',
+        });
+      }
 
-      // 4) Upload to Cloudinary
+      // 4) Verify the event exists and belongs to the host
+      const event = await Event.findById(eventId);
+      if (!event) {
+        return res.status(404).json({
+          status: 'fail',
+          message: 'Event not found',
+        });
+      }
+      if (event.host.toString() !== host._id.toString()) {
+        return res.status(403).json({
+          status: 'fail',
+          message: 'You are not authorized to upload images for this event',
+        });
+      }
+
+      // 5) Upload to Cloudinary
       const uploadStream = cloudinary.uploader.upload_stream(
         {
-          folder: 'genpay/events/gallery', // Store gallery images in a subfolder
+          folder: 'genpay/events/gallery',
           public_id: `gallery_${Date.now()}_${req.file.originalname}`,
           resource_type: 'image',
-          transformation: [{ width: 1080, height: 1080, crop: 'fill' }], // Recommended size
+          transformation: [{ width: 1080, height: 1080, crop: 'fill' }],
         },
-        (error, result) => {
+        async (error, result) => {
           if (error) {
             console.error('Cloudinary upload error:', error);
             return res.status(500).json({
@@ -427,15 +483,31 @@ exports.uploadGalleryImage = async (req, res) => {
             });
           }
 
-          // 5) Return success response
-          res.status(200).json({
-            status: 'success',
-            data: {
-              imageUrl: result.secure_url,
-              uploadId: result.public_id,
-            },
-            message: `${req.file.originalname} uploaded successfully`,
-          });
+          // 6) Update the event by appending the gallery image URL
+          try {
+            await Event.findByIdAndUpdate(
+              eventId,
+              { $push: { images: result.secure_url } },
+              { new: true, runValidators: true }
+            );
+
+            // 7) Return success response
+            res.status(200).json({
+              status: 'success',
+              data: {
+                imageUrl: result.secure_url,
+                uploadId: result.public_id,
+                eventId,
+              },
+              message: `${req.file.originalname} uploaded successfully`,
+            });
+          } catch (updateError) {
+            console.error('Event update error:', updateError);
+            return res.status(500).json({
+              status: 'error',
+              message: 'Failed to save gallery image URL to database',
+            });
+          }
         }
       );
 
