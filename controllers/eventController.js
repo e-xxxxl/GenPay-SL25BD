@@ -221,6 +221,277 @@ const upload = multer({
   },
 }).single('eventImage'); // Match the field name from frontend FormData
 
+exports.getEvents = async (req, res) => {
+  try {
+    // 1) Verify authentication
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'No authentication token provided',
+      });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'Invalid or expired token',
+      });
+    }
+
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({
+        status: 'fail',
+        message: 'Host not found',
+      });
+    }
+
+    // 2) Fetch events for the authenticated host
+    const events = await Event.find({ host: host._id })
+      .populate('host', 'displayName userType firstName lastName organizationName')
+      .select(
+        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images capacity tickets isPublished createdAt ticketPolicy'
+      );
+
+    // 3) Map events to match the format expected by ThirdSection
+    const formattedEvents = events.map((event) => ({
+      id: event._id.toString(),
+      title: event.eventName,
+      description: event.eventDescription,
+      category: event.eventCategory,
+      date: event.startDateTime,
+      endDate: event.endDateTime,
+      location: event.eventLocation.venue,
+      locationTips: event.eventLocation.locationTips || null,
+      url: event.eventUrl || null,
+      image: event.headerImage || null,
+      poster: event.headerImage || null,
+      attendees: event.tickets ? event.tickets.length : 0,
+      socialLinks: {
+        instagram: event.socialLinks.instagram || null,
+        twitter: event.socialLinks.twitter || null,
+        snapchat: event.socialLinks.snapchat || null,
+        tiktok: event.socialLinks.tiktok || null,
+        website: event.socialLinks.website || null,
+      },
+      host: {
+        id: event.host._id.toString(),
+        displayName: event.host.displayName,
+        userType: event.host.userType,
+        firstName: event.host.firstName || null,
+        lastName: event.host.lastName || null,
+        organizationName: event.host.organizationName || null,
+      },
+      isPublished: event.isPublished,
+      createdAt: event.createdAt,
+      ticketPolicy: {
+        refundPolicy: event.ticketPolicy?.refundPolicy || null,
+        transferPolicy: event.ticketPolicy?.transferPolicy || null,
+        otherRules: event.ticketPolicy?.otherRules || null,
+      },
+    }));
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        events: formattedEvents,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching events:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch events',
+    });
+  }
+};
+
+
+exports.getEvents = async (req, res) => {
+  try {
+    // 1) Verify authentication
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'No authentication token provided',
+      });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'Invalid or expired token',
+      });
+    }
+
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({
+        status: 'fail',
+        message: 'Host not found',
+      });
+    }
+
+    // 2) Fetch events for the authenticated host
+    const events = await Event.find({ host: host._id })
+      .populate('host', 'displayName userType firstName lastName organizationName')
+      .select(
+        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images capacity tickets isPublished createdAt'
+      );
+
+    // 3) Map events to match the format expected by ThirdSection
+    const formattedEvents = events.map((event) => ({
+      id: event._id.toString(),
+      title: event.eventName,
+      description: event.eventDescription,
+      category: event.eventCategory,
+      date: event.startDateTime, // Maps to startDateTime
+      endDate: event.endDateTime, // Maps to endDateTime
+      location: event.eventLocation.venue, // Use venue as primary location
+      locationTips: event.eventLocation.locationTips || null,
+      url: event.eventUrl || null,
+      image: event.headerImage || null, // Use headerImage as primary image
+      poster: event.headerImage || null, // Alias for image
+      attendees: event.tickets ? event.tickets.length : 0, // Count tickets as attendees
+      socialLinks: {
+        instagram: event.socialLinks.instagram || null,
+        twitter: event.socialLinks.twitter || null,
+        snapchat: event.socialLinks.snapchat || null,
+        tiktok: event.socialLinks.tiktok || null,
+        website: event.socialLinks.website || null,
+      },
+      host: {
+        id: event.host._id.toString(),
+        displayName: event.host.displayName,
+        userType: event.host.userType,
+        firstName: event.host.firstName || null,
+        lastName: event.host.lastName || null,
+        organizationName: event.host.organizationName || null,
+      },
+      isPublished: event.isPublished,
+      createdAt: event.createdAt,
+    }));
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        events: formattedEvents,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching events:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch events',
+    });
+  }
+};
+
+exports.setTicketPolicy = async (req, res) => {
+  try {
+    // 1) Verify authentication
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'No authentication token provided',
+      });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'Invalid or expired token',
+      });
+    }
+
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({
+        status: 'fail',
+        message: 'Host not found',
+      });
+    }
+
+    // 2) Validate event ID
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Invalid event ID',
+      });
+    }
+
+    // 3) Verify the event exists and belongs to the host
+    const event = await Event.findById(id);
+    if (!event) {
+      return res.status(404).json({
+        status: 'fail',
+        message: 'Event not found',
+      });
+    }
+    if (event.host.toString() !== host._id.toString()) {
+      return res.status(403).json({
+        status: 'fail',
+        message: 'You are not authorized to set the ticket policy for this event',
+      });
+    }
+
+    // 4) Validate ticket policy data
+    const { refundPolicy, transferPolicy, otherRules } = req.body;
+    if (!refundPolicy && !transferPolicy && !otherRules) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'At least one ticket policy field (refundPolicy, transferPolicy, otherRules) is required',
+      });
+    }
+
+    // 5) Update ticket policy
+    const ticketPolicy = {
+      refundPolicy: refundPolicy?.trim() || null,
+      transferPolicy: transferPolicy?.trim() || null,
+      otherRules: otherRules?.trim() || null,
+    };
+
+    const updatedEvent = await Event.findByIdAndUpdate(
+      id,
+      { ticketPolicy, isPublished: true }, // Set isPublished to true when ticket policy is added
+      { new: true, runValidators: true }
+    );
+
+    // 6) Send response
+    res.status(200).json({
+      status: 'success',
+      data: {
+        event: {
+          id: updatedEvent._id.toString(),
+          title: updatedEvent.eventName,
+          ticketPolicy: updatedEvent.ticketPolicy,
+          isPublished: updatedEvent.isPublished,
+        },
+      },
+      message: 'Ticket policy set successfully',
+    });
+  } catch (error) {
+    console.error('Error setting ticket policy:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to set ticket policy',
+    });
+  }
+};
+
 // Upload event image
 exports.uploadEventImage = async (req, res) => {
   upload(req, res, async (err) => {
@@ -522,4 +793,132 @@ exports.uploadGalleryImage = async (req, res) => {
       });
     }
   });
+};
+
+
+// controllers/eventController.js
+// controllers/eventController.js
+exports.getEventById = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    console.log("Received token:", token);
+    if (!token) {
+      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      console.log("Decoded token:", decoded);
+    } catch (err) {
+      return res.status(401).json({ status: 'fail', message: 'Invalid or expired token' });
+    }
+
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({ status: 'fail', message: 'Host not found' });
+    }
+
+    const event = await Event.findById(req.params.id).populate('host', 'displayName userType firstName lastName organizationName');
+    console.log("Requested event ID:", req.params.id); // Log the event ID
+    if (!event) {
+      return res.status(404).json({ status: 'fail', message: 'Event not found' });
+    }
+    console.log("Event host object:", event.host, "Event host ID:", event.host ? event.host._id.toString() : "null");
+    console.log("Requesting host object:", host, "Requesting host ID:", host._id.toString());
+    if (event.host && event.host._id.toString() !== host._id.toString()) {
+      return res.status(403).json({ status: 'fail', message: 'You are not authorized to view this event' });
+    }
+
+    res.status(200).json({
+      status: 'success',
+      data: { event },
+    });
+  } catch (error) {
+    console.error('Error fetching event:', error);
+    res.status(500).json({ status: 'error', message: 'Failed to fetch event' });
+  }
+};
+
+exports.updateEvent = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({ status: 'fail', message: 'Invalid or expired token' });
+    }
+
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({ status: 'fail', message: 'Host not found' });
+    }
+
+    const event = await Event.findById(req.params.id);
+    if (!event) {
+      return res.status(404).json({ status: 'fail', message: 'Event not found' });
+    }
+    if (event.host.toString() !== host._id.toString()) {
+      return res.status(403).json({ status: 'fail', message: 'You are not authorized to update this event' });
+    }
+
+    const {
+      eventName,
+      eventDescription,
+      eventLocation,
+      eventLocationTips,
+      eventUrl,
+      eventCategory,
+      startDateTime,
+      endDateTime,
+      socialLinks,
+      ticketTiers,
+    } = req.body;
+
+    const updatedEvent = await Event.findByIdAndUpdate(
+      req.params.id,
+      {
+        eventName,
+        eventDescription,
+        eventCategory,
+        startDateTime: new Date(startDateTime),
+        endDateTime: new Date(endDateTime),
+        eventLocation: {
+          venue: eventLocation,
+          locationTips: eventLocationTips || undefined,
+        },
+        eventUrl: eventUrl || undefined,
+        socialLinks: {
+          instagram: socialLinks?.instagram || undefined,
+          twitter: socialLinks?.twitter || undefined,
+          snapchat: socialLinks?.snapchat || undefined,
+          tiktok: socialLinks?.tiktok || undefined,
+          website: socialLinks?.website || undefined,
+        },
+        tickets: ticketTiers || [],
+      },
+      { new: true, runValidators: true }
+    );
+
+    res.status(200).json({
+      status: 'success',
+      data: { event: updatedEvent },
+      message: 'Event updated successfully',
+    });
+  } catch (error) {
+    console.error('Error updating event:', error);
+    if (error.name === 'ValidationError') {
+      const errors = Object.values(error.errors).map((el) => ({
+        field: el.path,
+        message: el.message,
+      }));
+      return res.status(400).json({ status: 'fail', message: 'Validation failed', errors });
+    }
+    res.status(500).json({ status: 'error', message: 'Failed to update event' });
+  }
 };

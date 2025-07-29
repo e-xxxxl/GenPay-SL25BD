@@ -14,4 +14,9 @@ router
   router
   .route('/upload-gallery')
   .post(authController.protect, eventController.uploadGalleryImage);
+
+  router.get('/', authController.protect, eventController.getEvents);
+  router.get('/:id', eventController.getEventById); // New endpoint
+router.put('/:id', eventController.updateEvent);  // New endpoint
+router.post('/:id/ticket-policy', eventController.setTicketPolicy);
 module.exports = router;

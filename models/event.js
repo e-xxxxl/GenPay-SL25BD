@@ -1,3 +1,4 @@
+// models/event.js
 const mongoose = require('mongoose');
 
 const eventSchema = new mongoose.Schema(
@@ -75,15 +76,15 @@ const eventSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
-     images: {
+    images: {
       type: [String],
       validate: {
         validator: function (arr) {
-          return arr.length <= 10; // Max 10 gallery images
+          return arr.length <= 10;
         },
         message: 'Gallery cannot contain more than 10 images',
       },
-    }, // Array for additional image URLs (e.g., gallery)
+    },
     capacity: {
       type: Number,
       min: [1, 'Capacity must be at least 1'],
@@ -98,10 +99,17 @@ const eventSchema = new mongoose.Schema(
     },
     tickets: [
       {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Ticket',
+        name: { type: String, required: true },
+        price: { type: Number, required: true, min: 0 },
+        quantity: { type: Number, required: true, min: 0 },
+        id: { type: Number, unique: true }, // Temporary unique ID
       },
     ],
+    ticketPolicy: {
+      refundPolicy: { type: String, trim: true, default: null },
+      transferPolicy: { type: String, trim: true, default: null },
+      otherRules: { type: String, trim: true, default: null },
+    },
   },
   {
     toJSON: { virtuals: true },
@@ -111,7 +119,7 @@ const eventSchema = new mongoose.Schema(
 
 // Virtual for remaining tickets
 eventSchema.virtual('remainingTickets').get(function () {
-  return this.capacity ? this.capacity - this.tickets.length : null;
+  return this.capacity ? this.capacity - this.tickets.reduce((sum, tier) => sum + tier.quantity, 0) : null;
 });
 
 // Validate that endDateTime is after startDateTime
