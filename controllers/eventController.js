@@ -1722,29 +1722,32 @@ exports.scanTicket = async (req, res) => {
     }
 
     // Parse QR code if it's JSON
+    let ticketId = qrCode;
     try {
       const parsed = JSON.parse(qrCode);
-      qrCode = parsed.ticketId || qrCode; // Fallback to raw qrCode if no ticketId
-      console.log("Parsed QR code ticketId:", qrCode);
+      ticketId = parsed.ticketId || qrCode;
+      console.log("Parsed QR code ticketId:", ticketId);
     } catch (e) {
-      console.warn("QR code is not JSON, using raw value:", qrCode);
+      console.warn("QR code is not JSON, using raw value:", ticketId);
     }
 
-    console.log("Scanning ticket:", qrCode);
+    console.log("Searching for ticket with ticketId:", ticketId);
     const ticket = await Ticket.findOne({
       $or: [
-        { _id: mongoose.Types.ObjectId.isValid(qrCode) ? qrCode : null },
-        { ticketId: qrCode }, // If your tickets have a specific ticketId field
-        { qrCode }, // If your tickets store the QR code directly
+        { ticketId: ticketId }, // UUID field
+        { _id: mongoose.Types.ObjectId.isValid(ticketId) ? ticketId : null }, // MongoDB ObjectId
+        { qrCode: ticketId }, // If qrCode field exists
       ],
     })
       .populate('event', 'eventName host')
       .populate('owner', 'firstName lastName email phone location');
 
     if (!ticket) {
+      console.log("Ticket not found for ticketId:", ticketId);
       return res.status(404).json({ status: 'fail', message: 'Ticket not found' });
     }
 
+    console.log("Found ticket:", ticket);
     if (ticket.event.host.toString() !== host._id.toString()) {
       return res.status(403).json({
         status: 'fail',
@@ -1776,6 +1779,7 @@ exports.scanTicket = async (req, res) => {
     ticket.isUsed = true;
     ticket.usedAt = new Date();
     await ticket.save();
+    console.log("Ticket updated as used:", ticket);
 
     const formattedTicket = {
       id: ticket._id.toString(),
