@@ -27,7 +27,8 @@ router.post('/:id/tickets', authController.protect, eventController.addTicket);
 router.put('/:id/tickets/:ticketId', authController.protect, eventController.editTicket);
 router.get('/:id/getTickets', authController.protect, eventController.getEventTickets);
 router.delete('/:id/tickets/:ticketId', authController.protect, eventController.deleteTicket);
-router.post('/scan-ticket', authController.protect, eventController.scanTicket);
+
+router.post("/:id/check-in-ticket", eventController.checkInTicket);
 // routes/eventRouter.js
 router.post('/:id/search-ticket', authController.protect, eventController.searchTicket);
 // routes/eventRouter.js

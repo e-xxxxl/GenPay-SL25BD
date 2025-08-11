@@ -1,35 +1,32 @@
-// models/ticket.js
-const mongoose = require('mongoose');
+// models/ticketModel.js
+const mongoose = require("mongoose");
 
 const ticketSchema = new mongoose.Schema({
+  ticketId: {
+    type: String,
+    required: true,
+    unique: true,
+  },
   event: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Event',
+    ref: "Event",
     required: true,
   },
   owner: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    ref: "User",
     required: true,
   },
   type: {
     type: String,
-    required: true, // Will be set dynamically from event.tickets.name
+    required: true,
   },
   price: {
     type: Number,
     required: true,
-    min: 0,
   },
-  purchaseDate: {
-    type: Date,
-    default: Date.now,
-  },
-  seatNumber: String,
   qrCode: {
     type: String,
-    unique: true,
-    required: true,
   },
   isUsed: {
     type: Boolean,
@@ -38,7 +35,10 @@ const ticketSchema = new mongoose.Schema({
   usedAt: {
     type: Date,
   },
+  purchaseDate: {
+    type: Date,
+    default: Date.now,
+  },
 });
 
-const Ticket = mongoose.model('Ticket', ticketSchema);
-module.exports = Ticket;
+module.exports = mongoose.model("Ticket", ticketSchema);
