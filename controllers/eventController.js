@@ -4,12 +4,16 @@ const jwt = require('jsonwebtoken');
 const cloudinary = require('../config/cloudinary');
 const multer = require('multer');
 const { Readable } = require('stream');
-
+const mongoose = require('mongoose');
+const { v4: uuidv4 } = require('uuid');
+const User = require('../models/user');
+const Ticket = require('../models/ticket');
+const Payout = require('../models/payout')
+const QRCode = require('qrcode');
 
 // Create a new event
 exports.createEvent = async (req, res) => {
   try {
-    // 1) Verify authentication
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) {
       return res.status(401).json({
@@ -43,7 +47,6 @@ exports.createEvent = async (req, res) => {
       });
     }
 
-    // 2) Validate required fields
     const {
       eventName,
       eventDescription,
@@ -55,7 +58,7 @@ exports.createEvent = async (req, res) => {
       endDateTime,
       socialLinks,
       headerImage,
-       images, // Add this
+      images,
     } = req.body;
 
     const requiredFields = {
@@ -80,7 +83,6 @@ exports.createEvent = async (req, res) => {
       });
     }
 
-     // Validate headerImage URL if provided
     if (headerImage) {
       try {
         new URL(headerImage);
@@ -93,7 +95,6 @@ exports.createEvent = async (req, res) => {
       }
     }
 
-    // Validate gallery image URLs if provided
     if (images && Array.isArray(images)) {
       for (const url of images) {
         try {
@@ -108,7 +109,6 @@ exports.createEvent = async (req, res) => {
       }
     }
 
-    // 3) Validate URL fields
     const urlFields = [
       'eventUrl',
       'instagram',
@@ -132,7 +132,6 @@ exports.createEvent = async (req, res) => {
       }
     }
 
-    // 4) Validate date format and logic
     const start = new Date(startDateTime);
     const end = new Date(endDateTime);
     if (isNaN(start.getTime()) || isNaN(end.getTime())) {
@@ -143,7 +142,6 @@ exports.createEvent = async (req, res) => {
       });
     }
 
-    // 5) Create event
     const eventData = {
       host: host._id,
       eventName: eventName.trim(),
@@ -163,17 +161,17 @@ exports.createEvent = async (req, res) => {
         tiktok: socialLinks?.tiktok?.trim() || undefined,
         website: socialLinks?.website?.trim() || undefined,
       },
-      headerImage: headerImage?.trim() || undefined, // Add this
-        images: images || [], // Add this
+      headerImage: headerImage?.trim() || undefined,
+      images: images || [],
+      tickets: [], // Initialize tickets array
     };
 
     const newEvent = await Event.create(eventData);
 
-    // 6) Update host's events array
+    host.events = host.events || [];
     host.events.push(newEvent._id);
     await host.save({ validateBeforeSave: false });
 
-    // 7) Send response
     res.status(201).json({
       status: 'success',
       data: {
@@ -183,8 +181,6 @@ exports.createEvent = async (req, res) => {
     });
   } catch (err) {
     console.error('Create event error:', err);
-
-    // Handle validation errors
     if (err.name === 'ValidationError') {
       const errors = Object.values(err.errors).map((el) => ({
         field: el.path,
@@ -196,11 +192,10 @@ exports.createEvent = async (req, res) => {
         errors,
       });
     }
-
-    // Handle other errors
     res.status(500).json({
       status: 'error',
       message: 'An unexpected error occurred. Please try again later.',
+      error: err.message,
     });
   }
 };
@@ -340,50 +335,66 @@ exports.getEvents = async (req, res) => {
       });
     }
 
-    // 2) Fetch events for the authenticated host
+    // 2) Fetch events with pagination
+    const page = parseInt(req.query.page) || 1;
+    const limit = 6; // Number of events per page
+    const skip = (page - 1) * limit;
+
     const events = await Event.find({ host: host._id })
       .populate('host', 'displayName userType firstName lastName organizationName')
       .select(
         'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images capacity tickets isPublished createdAt'
-      );
+      )
+      .skip(skip)
+      .limit(limit);
 
-    // 3) Map events to match the format expected by ThirdSection
-    const formattedEvents = events.map((event) => ({
-      id: event._id.toString(),
-      title: event.eventName,
-      description: event.eventDescription,
-      category: event.eventCategory,
-      date: event.startDateTime, // Maps to startDateTime
-      endDate: event.endDateTime, // Maps to endDateTime
-      location: event.eventLocation.venue, // Use venue as primary location
-      locationTips: event.eventLocation.locationTips || null,
-      url: event.eventUrl || null,
-      image: event.headerImage || null, // Use headerImage as primary image
-      poster: event.headerImage || null, // Alias for image
-      attendees: event.tickets ? event.tickets.length : 0, // Count tickets as attendees
-      socialLinks: {
-        instagram: event.socialLinks.instagram || null,
-        twitter: event.socialLinks.twitter || null,
-        snapchat: event.socialLinks.snapchat || null,
-        tiktok: event.socialLinks.tiktok || null,
-        website: event.socialLinks.website || null,
-      },
-      host: {
-        id: event.host._id.toString(),
-        displayName: event.host.displayName,
-        userType: event.host.userType,
-        firstName: event.host.firstName || null,
-        lastName: event.host.lastName || null,
-        organizationName: event.host.organizationName || null,
-      },
-      isPublished: event.isPublished,
-      createdAt: event.createdAt,
-    }));
+    // 3) Validate and map events
+    const formattedEvents = events.map((event) => {
+      if (!event.eventName) {
+        console.warn(`Event ${event._id} is missing eventName, using fallback`);
+      }
+      return {
+        id: event._id.toString(),
+        title: event.eventName || `Unnamed Event ${event._id.toString().slice(-6)}`, // More specific fallback
+        description: event.eventDescription || 'No description',
+        category: event.eventCategory,
+        date: event.startDateTime,
+        endDate: event.endDateTime,
+        location: event.eventLocation?.venue || 'Unknown Location',
+        locationTips: event.eventLocation?.locationTips || null,
+        url: event.eventUrl || null,
+        image: event.headerImage || null,
+        poster: event.headerImage || null,
+        attendees: event.tickets ? event.tickets.length : 0,
+        socialLinks: {
+          instagram: event.socialLinks?.instagram || null,
+          twitter: event.socialLinks?.twitter || null,
+          snapchat: event.socialLinks?.snapchat || null,
+          tiktok: event.socialLinks?.tiktok || null,
+          website: event.socialLinks?.website || null,
+        },
+        host: {
+          id: event.host._id.toString(),
+          displayName: event.host.displayName,
+          userType: event.host.userType,
+          firstName: event.host.firstName || null,
+          lastName: event.host.lastName || null,
+          organizationName: event.host.organizationName || null,
+        },
+        isPublished: event.isPublished,
+        createdAt: event.createdAt,
+      };
+    });
+
+    const totalEvents = await Event.countDocuments({ host: host._id });
+    const totalPages = Math.ceil(totalEvents / limit);
 
     res.status(200).json({
       status: 'success',
       data: {
         events: formattedEvents,
+        totalPages,
+        currentPage: page,
       },
     });
   } catch (error) {
@@ -397,7 +408,6 @@ exports.getEvents = async (req, res) => {
 
 exports.setTicketPolicy = async (req, res) => {
   try {
-    // 1) Verify authentication
     const token = req.headers.authorization?.split(' ')[1];
     if (!token) {
       return res.status(401).json({
@@ -424,7 +434,6 @@ exports.setTicketPolicy = async (req, res) => {
       });
     }
 
-    // 2) Validate event ID
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({
@@ -433,22 +442,28 @@ exports.setTicketPolicy = async (req, res) => {
       });
     }
 
-    // 3) Verify the event exists and belongs to the host
-    const event = await Event.findById(id);
+    const event = await Event.findById(id).select('host ticketPolicy').populate('host', '_id');
     if (!event) {
       return res.status(404).json({
         status: 'fail',
         message: 'Event not found',
       });
     }
-    if (event.host.toString() !== host._id.toString()) {
+
+    if (!event.host || !event.host._id) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Event host data is missing or invalid',
+      });
+    }
+
+    if (event.host._id.toString() !== host._id.toString()) {
       return res.status(403).json({
         status: 'fail',
         message: 'You are not authorized to set the ticket policy for this event',
       });
     }
 
-    // 4) Validate ticket policy data
     const { refundPolicy, transferPolicy, otherRules } = req.body;
     if (!refundPolicy && !transferPolicy && !otherRules) {
       return res.status(400).json({
@@ -457,7 +472,6 @@ exports.setTicketPolicy = async (req, res) => {
       });
     }
 
-    // 5) Update ticket policy
     const ticketPolicy = {
       refundPolicy: refundPolicy?.trim() || null,
       transferPolicy: transferPolicy?.trim() || null,
@@ -466,11 +480,10 @@ exports.setTicketPolicy = async (req, res) => {
 
     const updatedEvent = await Event.findByIdAndUpdate(
       id,
-      { ticketPolicy, isPublished: true }, // Set isPublished to true when ticket policy is added
+      { ticketPolicy, isPublished: true },
       { new: true, runValidators: true }
     );
 
-    // 6) Send response
     res.status(200).json({
       status: 'success',
       data: {
@@ -488,6 +501,7 @@ exports.setTicketPolicy = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to set ticket policy',
+      error: error.message,
     });
   }
 };
@@ -514,7 +528,6 @@ exports.uploadEventImage = async (req, res) => {
         });
       }
 
-      // 1) Verify authentication
       const token = req.headers.authorization?.split(' ')[1];
       if (!token) {
         return res.status(401).json({
@@ -548,7 +561,6 @@ exports.uploadEventImage = async (req, res) => {
         });
       }
 
-      // 2) Validate file presence
       if (!req.file) {
         return res.status(400).json({
           status: 'fail',
@@ -556,7 +568,6 @@ exports.uploadEventImage = async (req, res) => {
         });
       }
 
-      // 3) Validate imageType and eventId
       const { imageType, eventId } = req.body;
       if (!imageType || imageType !== 'header') {
         return res.status(400).json({
@@ -571,22 +582,28 @@ exports.uploadEventImage = async (req, res) => {
         });
       }
 
-      // 4) Verify the event exists and belongs to the host
-      const event = await Event.findById(eventId);
+      const event = await Event.findById(eventId).select('host headerImage').populate('host', '_id');
       if (!event) {
         return res.status(404).json({
           status: 'fail',
           message: 'Event not found',
         });
       }
-      if (event.host.toString() !== host._id.toString()) {
+
+      if (!event.host || !event.host._id) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Event host data is missing or invalid',
+        });
+      }
+
+      if (event.host._id.toString() !== host._id.toString()) {
         return res.status(403).json({
           status: 'fail',
           message: 'You are not authorized to upload images for this event',
         });
       }
 
-      // 5) Upload to Cloudinary
       const uploadStream = cloudinary.uploader.upload_stream(
         {
           folder: 'genpay/events',
@@ -602,7 +619,6 @@ exports.uploadEventImage = async (req, res) => {
             });
           }
 
-          // 6) Update the event with the header image URL
           try {
             await Event.findByIdAndUpdate(
               eventId,
@@ -610,7 +626,6 @@ exports.uploadEventImage = async (req, res) => {
               { new: true, runValidators: true }
             );
 
-            // 7) Return success response
             res.status(200).json({
               status: 'success',
               data: {
@@ -630,7 +645,6 @@ exports.uploadEventImage = async (req, res) => {
         }
       );
 
-      // Convert buffer to stream and pipe to Cloudinary
       const stream = Readable.from(req.file.buffer);
       stream.pipe(uploadStream);
     } catch (error) {
@@ -638,10 +652,11 @@ exports.uploadEventImage = async (req, res) => {
       res.status(500).json({
         status: 'error',
         message: 'An unexpected error occurred. Please try again later.',
+        error: error.message,
       });
     }
   });
-};
+};;
 
 // Upload gallery image
 exports.uploadGalleryImage = async (req, res) => {
@@ -665,7 +680,6 @@ exports.uploadGalleryImage = async (req, res) => {
         });
       }
 
-      // 1) Verify authentication
       const token = req.headers.authorization?.split(' ')[1];
       if (!token) {
         return res.status(401).json({
@@ -699,7 +713,6 @@ exports.uploadGalleryImage = async (req, res) => {
         });
       }
 
-      // 2) Validate file presence
       if (!req.file) {
         return res.status(400).json({
           status: 'fail',
@@ -707,7 +720,6 @@ exports.uploadGalleryImage = async (req, res) => {
         });
       }
 
-      // 3) Validate imageType and eventId
       const { imageType, eventId } = req.body;
       if (!imageType || imageType !== 'gallery') {
         return res.status(400).json({
@@ -722,22 +734,28 @@ exports.uploadGalleryImage = async (req, res) => {
         });
       }
 
-      // 4) Verify the event exists and belongs to the host
-      const event = await Event.findById(eventId);
+      const event = await Event.findById(eventId).select('host images').populate('host', '_id');
       if (!event) {
         return res.status(404).json({
           status: 'fail',
           message: 'Event not found',
         });
       }
-      if (event.host.toString() !== host._id.toString()) {
+
+      if (!event.host || !event.host._id) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Event host data is missing or invalid',
+        });
+      }
+
+      if (event.host._id.toString() !== host._id.toString()) {
         return res.status(403).json({
           status: 'fail',
           message: 'You are not authorized to upload images for this event',
         });
       }
 
-      // 5) Upload to Cloudinary
       const uploadStream = cloudinary.uploader.upload_stream(
         {
           folder: 'genpay/events/gallery',
@@ -754,7 +772,6 @@ exports.uploadGalleryImage = async (req, res) => {
             });
           }
 
-          // 6) Update the event by appending the gallery image URL
           try {
             await Event.findByIdAndUpdate(
               eventId,
@@ -762,7 +779,6 @@ exports.uploadGalleryImage = async (req, res) => {
               { new: true, runValidators: true }
             );
 
-            // 7) Return success response
             res.status(200).json({
               status: 'success',
               data: {
@@ -782,7 +798,6 @@ exports.uploadGalleryImage = async (req, res) => {
         }
       );
 
-      // Convert buffer to stream and pipe to Cloudinary
       const stream = Readable.from(req.file.buffer);
       stream.pipe(uploadStream);
     } catch (error) {
@@ -790,11 +805,11 @@ exports.uploadGalleryImage = async (req, res) => {
       res.status(500).json({
         status: 'error',
         message: 'An unexpected error occurred. Please try again later.',
+        error: error.message,
       });
     }
   });
 };
-
 
 // controllers/eventController.js
 // controllers/eventController.js
@@ -819,14 +834,22 @@ exports.getEventById = async (req, res) => {
       return res.status(404).json({ status: 'fail', message: 'Host not found' });
     }
 
-    const event = await Event.findById(req.params.id).populate('host', 'displayName userType firstName lastName organizationName');
-    console.log("Requested event ID:", req.params.id); // Log the event ID
+    const event = await Event.findById(req.params.id).populate('host', 'displayName userType firstName lastName organizationName _id');
+    console.log("Requested event ID:", req.params.id);
     if (!event) {
       return res.status(404).json({ status: 'fail', message: 'Event not found' });
     }
-    console.log("Event host object:", event.host, "Event host ID:", event.host ? event.host._id.toString() : "null");
+
+    if (!event.host || !event.host._id) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Event host data is missing or invalid',
+      });
+    }
+
+    console.log("Event host object:", event.host, "Event host ID:", event.host._id.toString());
     console.log("Requesting host object:", host, "Requesting host ID:", host._id.toString());
-    if (event.host && event.host._id.toString() !== host._id.toString()) {
+    if (event.host._id.toString() !== host._id.toString()) {
       return res.status(403).json({ status: 'fail', message: 'You are not authorized to view this event' });
     }
 
@@ -836,7 +859,11 @@ exports.getEventById = async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching event:', error);
-    res.status(500).json({ status: 'error', message: 'Failed to fetch event' });
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch event',
+      error: error.message,
+    });
   }
 };
 
@@ -859,11 +886,19 @@ exports.updateEvent = async (req, res) => {
       return res.status(404).json({ status: 'fail', message: 'Host not found' });
     }
 
-    const event = await Event.findById(req.params.id);
+    const event = await Event.findById(req.params.id).select('host').populate('host', '_id');
     if (!event) {
       return res.status(404).json({ status: 'fail', message: 'Event not found' });
     }
-    if (event.host.toString() !== host._id.toString()) {
+
+    if (!event.host || !event.host._id) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Event host data is missing or invalid',
+      });
+    }
+
+    if (event.host._id.toString() !== host._id.toString()) {
       return res.status(403).json({ status: 'fail', message: 'You are not authorized to update this event' });
     }
 
@@ -871,7 +906,6 @@ exports.updateEvent = async (req, res) => {
       eventName,
       eventDescription,
       eventLocation,
-      eventLocationTips,
       eventUrl,
       eventCategory,
       startDateTime,
@@ -880,27 +914,34 @@ exports.updateEvent = async (req, res) => {
       ticketTiers,
     } = req.body;
 
+    if (!eventLocation || typeof eventLocation !== 'object' || !eventLocation.venue) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Event location must be an object with a valid venue',
+      });
+    }
+
     const updatedEvent = await Event.findByIdAndUpdate(
       req.params.id,
       {
-        eventName,
-        eventDescription,
+        eventName: eventName?.trim(),
+        eventDescription: eventDescription?.trim(),
         eventCategory,
-        startDateTime: new Date(startDateTime),
-        endDateTime: new Date(endDateTime),
+        startDateTime: startDateTime ? new Date(startDateTime) : event.startDateTime,
+        endDateTime: endDateTime ? new Date(endDateTime) : event.endDateTime,
         eventLocation: {
-          venue: eventLocation,
-          locationTips: eventLocationTips || undefined,
+          venue: eventLocation.venue?.trim(),
+          locationTips: eventLocation.locationTips?.trim() || null,
         },
-        eventUrl: eventUrl || undefined,
+        eventUrl: eventUrl?.trim() || null,
         socialLinks: {
-          instagram: socialLinks?.instagram || undefined,
-          twitter: socialLinks?.twitter || undefined,
-          snapchat: socialLinks?.snapchat || undefined,
-          tiktok: socialLinks?.tiktok || undefined,
-          website: socialLinks?.website || undefined,
+          instagram: socialLinks?.instagram?.trim() || null,
+          twitter: socialLinks?.twitter?.trim() || null,
+          snapchat: socialLinks?.snapchat?.trim() || null,
+          tiktok: socialLinks?.tiktok?.trim() || null,
+          website: socialLinks?.website?.trim() || null,
         },
-        tickets: ticketTiers || [],
+        tickets: ticketTiers || event.tickets || [],
       },
       { new: true, runValidators: true }
     );
@@ -919,6 +960,1091 @@ exports.updateEvent = async (req, res) => {
       }));
       return res.status(400).json({ status: 'fail', message: 'Validation failed', errors });
     }
-    res.status(500).json({ status: 'error', message: 'Failed to update event' });
+    if (error.name === 'CastError') {
+      return res.status(400).json({
+        status: 'fail',
+        message: `Invalid data for ${error.path}: ${error.value}`,
+      });
+    }
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to update event',
+      error: error.message,
+    });
+  }
+};
+
+exports.addTicket = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({ status: 'fail', message: 'Invalid or expired token' });
+    }
+
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({ status: 'fail', message: 'Host not found' });
+    }
+
+    const event = await Event.findById(req.params.id).select('tickets host').populate('host', '_id');
+    if (!event) {
+      return res.status(404).json({ status: 'fail', message: 'Event not found' });
+    }
+
+    if (!event.host || !event.host._id) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Event host data is missing or invalid',
+      });
+    }
+
+    if (event.host._id.toString() !== host._id.toString()) {
+      return res.status(403).json({ status: 'fail', message: 'You are not authorized to add tickets to this event' });
+    }
+
+    const ticketData = req.body;
+    const requiredFields = ['name', 'ticketType', 'quantity'];
+    const missingFields = requiredFields.filter(field => !ticketData[field]);
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        status: 'fail',
+        message: `Missing required fields: ${missingFields.join(', ')}`,
+      });
+    }
+
+    if (!['Individual', 'Group'].includes(ticketData.ticketType)) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Ticket type must be either "Individual" or "Group"',
+      });
+    }
+
+    if (ticketData.ticketType === 'Individual') {
+      if (!Number.isFinite(ticketData.perTicketPrice) || ticketData.perTicketPrice < 0) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Per ticket price is required for individual tickets and must be non-negative',
+        });
+      }
+      if (!['USD', 'NGN', 'GBP', 'EUR'].includes(ticketData.perTicketCurrency)) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Invalid per ticket currency. Must be USD, NGN, GBP, or EUR',
+        });
+      }
+    } else if (ticketData.ticketType === 'Group') {
+      if (!Number.isFinite(ticketData.groupPrice) || ticketData.groupPrice < 0) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Group price is required for group tickets and must be non-negative',
+        });
+      }
+      if (!['USD', 'NGN', 'GBP', 'EUR'].includes(ticketData.groupPriceCurrency)) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Invalid group price currency. Must be USD, NGN, GBP, or EUR',
+        });
+      }
+      if (!ticketData.groupSize || (ticketData.groupSize !== 'Unlimited Quantity' && !Number.isFinite(Number(ticketData.groupSize)))) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Group size must be "Unlimited Quantity" or a valid number',
+        });
+      }
+    }
+
+    if (!Number.isFinite(ticketData.quantity) || ticketData.quantity < 0) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Quantity must be a non-negative number',
+      });
+    }
+
+    ticketData.id = ticketData.id || uuidv4();
+
+    const newTicket = {
+      id: ticketData.id,
+      name: ticketData.name.trim(),
+      ticketType: ticketData.ticketType,
+      quantity: ticketData.quantity,
+      price: ticketData.ticketType === 'Individual' ? ticketData.perTicketPrice : ticketData.groupPrice,
+      perTicketPrice: ticketData.ticketType === 'Individual' ? ticketData.perTicketPrice : null,
+      perTicketCurrency: ticketData.ticketType === 'Individual' ? ticketData.perTicketCurrency : null,
+      groupPrice: ticketData.ticketType === 'Group' ? ticketData.groupPrice : null,
+      groupPriceCurrency: ticketData.ticketType === 'Group' ? ticketData.groupPriceCurrency : null,
+      groupSize: ticketData.groupSize || 'Unlimited Quantity',
+      ticketDescription: ticketData.ticketDescription?.trim() || null,
+      perks: ticketData.perks || [],
+      transferFees: ticketData.transferFees || false,
+      purchaseLimit: ticketData.purchaseLimit || null,
+    };
+
+    event.tickets = event.tickets || [];
+    event.tickets.push(newTicket);
+    await event.save({ validateBeforeSave: true });
+
+    res.status(201).json({
+      status: 'success',
+      data: { ticket: newTicket },
+      message: 'Ticket added successfully',
+    });
+  } catch (error) {
+    console.error('Error adding ticket:', error);
+    if (error.name === 'ValidationError') {
+      const errors = Object.values(error.errors).map((el) => ({
+        field: el.path,
+        message: el.message,
+      }));
+      return res.status(400).json({ status: 'fail', message: 'Validation failed', errors });
+    }
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to add ticket',
+      error: error.message,
+    });
+  }
+};
+
+// Edit Ticket
+exports.editTicket = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({ status: 'fail', message: 'Invalid or expired token' });
+    }
+
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({ status: 'fail', message: 'Host not found' });
+    }
+
+    const event = await Event.findById(req.params.id).select('tickets host').populate('host', '_id');
+    if (!event) {
+      return res.status(404).json({ status: 'fail', message: 'Event not found' });
+    }
+
+    if (!event.host || !event.host._id) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Event host data is missing or invalid',
+      });
+    }
+
+    if (event.host._id.toString() !== host._id.toString()) {
+      return res.status(403).json({ status: 'fail', message: 'You are not authorized to edit tickets for this event' });
+    }
+
+    const ticketId = req.params.ticketId;
+    const ticketData = req.body;
+    const requiredFields = ['name', 'ticketType', 'quantity'];
+    const missingFields = requiredFields.filter(field => !ticketData[field]);
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        status: 'fail',
+        message: `Missing required fields: ${missingFields.join(', ')}`,
+      });
+    }
+
+    if (!['Individual', 'Group'].includes(ticketData.ticketType)) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Ticket type must be either "Individual" or "Group"',
+      });
+    }
+
+    if (ticketData.ticketType === 'Individual') {
+      if (!Number.isFinite(ticketData.perTicketPrice) || ticketData.perTicketPrice < 0) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Per ticket price is required for individual tickets and must be non-negative',
+        });
+      }
+      if (!['USD', 'NGN', 'GBP', 'EUR'].includes(ticketData.perTicketCurrency)) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Invalid per ticket currency. Must be USD, NGN, GBP, or EUR',
+        });
+      }
+    } else if (ticketData.ticketType === 'Group') {
+      if (!Number.isFinite(ticketData.groupPrice) || ticketData.groupPrice < 0) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Group price is required for group tickets and must be non-negative',
+        });
+      }
+      if (!['USD', 'NGN', 'GBP', 'EUR'].includes(ticketData.groupPriceCurrency)) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Invalid group price currency. Must be USD, NGN, GBP, or EUR',
+        });
+      }
+      if (!ticketData.groupSize || (ticketData.groupSize !== 'Unlimited Quantity' && !Number.isFinite(Number(ticketData.groupSize)))) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Group size must be "Unlimited Quantity" or a valid number',
+        });
+      }
+    }
+
+    if (!Number.isFinite(ticketData.quantity) || ticketData.quantity < 0) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Quantity must be a non-negative number',
+      });
+    }
+
+    event.tickets = event.tickets || [];
+    const ticketIndex = event.tickets.findIndex(ticket => ticket.id === ticketId);
+    if (ticketIndex === -1) {
+      return res.status(404).json({ status: 'fail', message: 'Ticket not found' });
+    }
+
+    event.tickets[ticketIndex] = {
+      id: ticketId,
+      name: ticketData.name.trim(),
+      ticketType: ticketData.ticketType,
+      quantity: ticketData.quantity,
+      price: ticketData.ticketType === 'Individual' ? ticketData.perTicketPrice : ticketData.groupPrice,
+      perTicketPrice: ticketData.ticketType === 'Individual' ? ticketData.perTicketPrice : null,
+      perTicketCurrency: ticketData.ticketType === 'Individual' ? ticketData.perTicketCurrency : null,
+      groupPrice: ticketData.ticketType === 'Group' ? ticketData.groupPrice : null,
+      groupPriceCurrency: ticketData.ticketType === 'Group' ? ticketData.groupPriceCurrency : null,
+      groupSize: ticketData.groupSize || 'Unlimited Quantity',
+      ticketDescription: ticketData.ticketDescription?.trim() || null,
+      perks: ticketData.perks || [],
+      transferFees: ticketData.transferFees || false,
+      purchaseLimit: ticketData.purchaseLimit || null,
+    };
+
+    await event.save({ validateBeforeSave: true });
+
+    res.status(200).json({
+      status: 'success',
+      data: { ticket: event.tickets[ticketIndex] },
+      message: 'Ticket updated successfully',
+    });
+  } catch (error) {
+    console.error('Error editing ticket:', error);
+    if (error.name === 'ValidationError') {
+      const errors = Object.values(error.errors).map((el) => ({
+        field: el.path,
+        message: el.message,
+      }));
+      return res.status(400).json({ status: 'fail', message: 'Validation failed', errors });
+    }
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to edit ticket',
+      error: error.message,
+    });
+  }
+};
+
+// Delete Ticket
+exports.deleteTicket = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({ status: 'fail', message: 'Invalid or expired token' });
+    }
+
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({ status: 'fail', message: 'Host not found' });
+    }
+
+    const event = await Event.findById(req.params.id).select('tickets host').populate('host', '_id');
+    if (!event) {
+      return res.status(404).json({ status: 'fail', message: 'Event not found' });
+    }
+
+    if (!event.host || !event.host._id) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Event host data is missing or invalid',
+      });
+    }
+
+    if (event.host._id.toString() !== host._id.toString()) {
+      return res.status(403).json({ status: 'fail', message: 'You are not authorized to delete tickets for this event' });
+    }
+
+    event.tickets = event.tickets || [];
+    const ticketIndex = event.tickets.findIndex(ticket => ticket.id === req.params.ticketId);
+    if (ticketIndex === -1) {
+      return res.status(404).json({ status: 'fail', message: 'Ticket not found' });
+    }
+
+    event.tickets.splice(ticketIndex, 1);
+    await event.save({ validateBeforeSave: true });
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Ticket deleted successfully',
+    });
+  } catch (error) {
+    console.error('Error deleting ticket:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to delete ticket',
+      error: error.message,
+    });
+  }
+};
+
+// Get Event Tickets
+exports.getEventTickets = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({ status: 'fail', message: 'Invalid or expired token' });
+    }
+
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({ status: 'fail', message: 'Host not found' });
+    }
+
+    // Include 'host' in select and populate it
+    const event = await Event.findById(req.params.id).select('tickets host').populate('host', '_id');
+    if (!event) {
+      return res.status(404).json({ status: 'fail', message: 'Event not found' });
+    }
+
+    // Validate host field
+    if (!event.host || !event.host._id) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Event host data is missing or invalid',
+      });
+    }
+
+    if (event.host._id.toString() !== host._id.toString()) {
+      return res.status(403).json({
+        status: 'fail',
+        message: 'You are not authorized to view tickets for this event',
+      });
+    }
+
+    res.status(200).json({
+      status: 'success',
+      data: { tickets: event.tickets || [] },
+    });
+  } catch (error) {
+    console.error('Error fetching tickets:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch tickets',
+      error: error.message,
+    });
+  }
+};
+
+// Delete header image
+exports.deleteHeaderImage = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({ status: 'fail', message: 'Invalid or expired token' });
+    }
+
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({ status: 'fail', message: 'Host not found' });
+    }
+
+    const { eventId, imageUrl } = req.body;
+    if (!eventId || !imageUrl) {
+      return res.status(400).json({ status: 'fail', message: 'Event ID and image URL are required' });
+    }
+
+    const event = await Event.findById(eventId).select('host headerImage').populate('host', '_id');
+    if (!event) {
+      return res.status(404).json({ status: 'fail', message: 'Event not found' });
+    }
+
+    if (!event.host || !event.host._id) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Event host data is missing or invalid',
+      });
+    }
+
+    if (event.host._id.toString() !== host._id.toString()) {
+      return res.status(403).json({ status: 'fail', message: 'You are not authorized to delete images for this event' });
+    }
+
+    if (event.headerImage !== imageUrl) {
+      return res.status(400).json({ status: 'fail', message: 'Image URL does not match header image' });
+    }
+
+    const publicId = imageUrl.split('/').pop().split('.')[0];
+    await cloudinary.uploader.destroy(`genpay/events/${publicId}`);
+
+    await Event.findByIdAndUpdate(eventId, { headerImage: null }, { new: true });
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Header image deleted successfully',
+    });
+  } catch (error) {
+    console.error('Delete header image error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to delete header image',
+      error: error.message,
+    });
+  }
+};
+
+// Delete gallery image
+exports.deleteGalleryImage = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({ status: 'fail', message: 'Invalid or expired token' });
+    }
+
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({ status: 'fail', message: 'Host not found' });
+    }
+
+    const { eventId, imageUrl } = req.body;
+    if (!eventId || !imageUrl) {
+      return res.status(400).json({ status: 'fail', message: 'Event ID and image URL are required' });
+    }
+
+    const event = await Event.findById(eventId).select('host images').populate('host', '_id');
+    if (!event) {
+      return res.status(404).json({ status: 'fail', message: 'Event not found' });
+    }
+
+    if (!event.host || !event.host._id) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Event host data is missing or invalid',
+      });
+    }
+
+    if (event.host._id.toString() !== host._id.toString()) {
+      return res.status(403).json({ status: 'fail', message: 'You are not authorized to delete images for this event' });
+    }
+
+    const publicId = imageUrl.split('/').pop().split('.')[0];
+    await cloudinary.uploader.destroy(`genpay/events/gallery/${publicId}`);
+
+    await Event.findByIdAndUpdate(eventId, { $pull: { images: imageUrl } }, { new: true });
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Gallery image deleted successfully',
+    });
+  } catch (error) {
+    console.error('Delete gallery image error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to delete gallery image',
+      error: error.message,
+    });
+  }
+};
+
+
+exports.getPublicEvents = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = 12;
+    const skip = (page - 1) * limit;
+
+    const events = await Event.find({ isPublished: true })
+      .select(
+        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images tickets'
+      )
+      .skip(skip)
+      .limit(limit)
+      .populate('host', 'displayName');
+
+    const formattedEvents = events.map(event => ({
+      _id: event._id.toString(),
+      eventName: event.eventName || `Unnamed Event ${event._id.toString().slice(-6)}`,
+      eventDescription: event.eventDescription || 'No description',
+      eventCategory: event.eventCategory,
+      startDateTime: event.startDateTime,
+      endDateTime: event.endDateTime,
+      eventLocation: {
+        venue: event.eventLocation.venue || 'Unknown Location',
+        locationTips: event.eventLocation.locationTips || null,
+        address: event.eventLocation.address || {},
+      },
+      eventUrl: event.eventUrl || null,
+      headerImage: event.headerImage || null,
+      images: event.images || [], // Ensured
+      socialLinks: event.socialLinks || {}, // Ensured
+      tickets: event.tickets || [],
+      host: {
+        displayName: event.host?.displayName || 'Unknown Host',
+      },
+    }));
+
+    const totalEvents = await Event.countDocuments({ isPublished: true });
+    const totalPages = Math.ceil(totalEvents / limit);
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        events: formattedEvents,
+        totalPages,
+        currentPage: page,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching public events:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch public events',
+    });
+  }
+};
+
+exports.purchaseTicket = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
+    if (!user) return res.status(404).json({ status: 'fail', message: 'User not found' });
+
+    const { eventId, tickets } = req.body;
+    if (!eventId || !tickets || !Array.isArray(tickets)) {
+      return res.status(400).json({ status: 'fail', message: 'Event ID and tickets array are required' });
+    }
+
+    const event = await Event.findById(eventId).select('tickets');
+    if (!event) return res.status(404).json({ status: 'fail', message: 'Event not found' });
+
+    const purchasedTickets = [];
+    for (const { ticketId, quantity } of tickets) {
+      const ticket = event.tickets.find((t) => t.id === ticketId);
+      if (!ticket) return res.status(404).json({ status: 'fail', message: `Ticket ${ticketId} not found` });
+      if (ticket.quantity < quantity) {
+        return res.status(400).json({ status: 'fail', message: `Insufficient quantity for ticket ${ticket.name}` });
+      }
+
+      const newTicket = await Ticket.create({
+        event: eventId,
+        owner: user._id,
+        type: ticket.name.toLowerCase().replace(/\s+/g, '-'),
+        price: ticket.price,
+        qrCode: uuidv4(),
+      });
+
+      ticket.quantity -= quantity;
+      purchasedTickets.push(newTicket);
+    }
+
+    await event.save({ validateBeforeSave: true });
+
+    res.status(201).json({
+      status: 'success',
+      data: { tickets: purchasedTickets },
+      message: 'Tickets purchased successfully',
+    });
+  } catch (error) {
+    console.error('Error purchasing tickets:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to purchase tickets',
+      error: error.message,
+    });
+  }
+};
+
+
+
+
+exports.purchaseTicket = async (req, res) => {
+  try {
+    const { eventId, tickets, customer } = req.body;
+    if (!eventId || !tickets || !Array.isArray(tickets) || !customer) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Event ID, tickets array, and customer details are required',
+      });
+    }
+
+    const { firstName, lastName, email, phone, location } = customer;
+    if (!firstName || !lastName || !email || !phone || !location) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Customer details (firstName, lastName, email, phone, location) are required',
+      });
+    }
+
+    // Find or create user by email
+    let user = await User.findOne({ email });
+    if (!user) {
+      user = await User.create({ firstName, lastName, email, phone, location });
+    }
+
+    const event = await Event.findById(eventId).populate('host', 'displayName firstName lastName organizationName');
+    if (!event) {
+      return res.status(404).json({ status: 'fail', message: 'Event not found' });
+    }
+
+    const purchasedTickets = [];
+    for (const { ticketId, quantity } of tickets) {
+      const ticket = event.tickets.find((t) => t.id === ticketId);
+      if (!ticket) {
+        return res.status(404).json({ status: 'fail', message: `Ticket ${ticketId} not found` });
+      }
+      if (ticket.quantity < quantity) {
+        return res.status(400).json({
+          status: 'fail',
+          message: `Insufficient quantity for ticket ${ticket.name}`,
+        });
+      }
+
+      for (let i = 0; i < quantity; i++) {
+        const qrCodeData = {
+          ticketId: uuidv4(),
+          eventId: event._id,
+          eventName: event.eventName,
+          ticketType: ticket.name,
+          customer: {
+            firstName,
+            lastName,
+            email,
+            phone,
+            location,
+          },
+          host: {
+            displayName: event.host.displayName,
+            firstName: event.host.firstName || null,
+            lastName: event.host.lastName || null,
+            organizationName: event.host.organizationName || null,
+          },
+          purchaseDate: new Date(),
+        };
+        const qrCodeUrl = await QRCode.toDataURL(JSON.stringify(qrCodeData));
+
+        const newTicket = await Ticket.create({
+          event: eventId,
+          owner: user._id,
+          type: ticket.name.toLowerCase().replace(/\s+/g, '-'),
+          price: ticket.price,
+          qrCode: qrCodeUrl,
+        });
+
+        purchasedTickets.push(newTicket);
+      }
+
+      ticket.quantity -= quantity;
+    }
+
+    await event.save({ validateBeforeSave: true });
+
+    res.status(201).json({
+      status: 'success',
+      data: { tickets: purchasedTickets },
+      message: 'Tickets purchased successfully',
+    });
+  } catch (error) {
+    console.error('Error purchasing tickets:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to purchase tickets',
+      error: error.message,
+    });
+  }
+};
+
+// New endpoint to scan and mark ticket as used
+exports.scanTicket = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({ status: 'fail', message: 'Host not found' });
+    }
+
+    const { qrCode } = req.body;
+    if (!qrCode) {
+      return res.status(400).json({ status: 'fail', message: 'QR code is required' });
+    }
+
+    console.log("Scanning ticket:", qrCode);
+    const ticket = await Ticket.findOne({
+      $or: [
+        { _id: mongoose.Types.ObjectId.isValid(qrCode) ? qrCode : null },
+        { qrCode }, // If your tickets have a specific qrCode field
+      ],
+    })
+      .populate('event', 'eventName host')
+      .populate('owner', 'firstName lastName email phone location');
+
+    if (!ticket) {
+      return res.status(404).json({ status: 'fail', message: 'Ticket not found' });
+    }
+
+    if (ticket.event.host.toString() !== host._id.toString()) {
+      return res.status(403).json({
+        status: 'fail',
+        message: 'You are not authorized to scan tickets for this event',
+      });
+    }
+
+    if (ticket.isUsed) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Ticket has already been used',
+        data: { ticket: {
+          id: ticket._id.toString(),
+          event: { id: ticket.event._id.toString(), eventName: ticket.event.eventName },
+          owner: {
+            firstName: ticket.owner.firstName,
+            lastName: ticket.owner.lastName,
+            email: ticket.owner.email,
+          },
+          type: ticket.type,
+          usedAt: ticket.usedAt,
+          status: 'used',
+        }},
+      });
+    }
+
+    ticket.isUsed = true;
+    ticket.usedAt = new Date();
+    await ticket.save();
+
+    const formattedTicket = {
+      id: ticket._id.toString(),
+      event: { id: ticket.event._id.toString(), eventName: ticket.event.eventName },
+      owner: {
+        firstName: ticket.owner.firstName,
+        lastName: ticket.owner.lastName,
+        email: ticket.owner.email,
+      },
+      type: ticket.type,
+      usedAt: ticket.usedAt,
+      status: 'valid',
+    };
+
+    res.status(200).json({
+      status: 'success',
+      data: { ticket: formattedTicket },
+      message: 'Ticket scanned successfully',
+    });
+  } catch (error) {
+    console.error('Error scanning ticket:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to scan ticket',
+      error: error.message,
+    });
+  }
+};
+
+// controllers/eventController.js
+
+exports.searchTicket = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({ status: 'fail', message: 'Host not found' });
+    }
+
+    const { id } = req.params;
+    const { search } = req.body;
+    if (!search) {
+      return res.status(400).json({ status: 'fail', message: 'Search query is required' });
+    }
+
+    console.log("Searching for:", search, "in event:", id);
+    const event = await Event.findById(id).select('host');
+    if (!event) {
+      return res.status(404).json({ status: 'fail', message: 'Event not found' });
+    }
+
+    if (event.host.toString() !== host._id.toString()) {
+      return res.status(403).json({
+        status: 'fail',
+        message: 'You are not authorized to search tickets for this event',
+      });
+    }
+
+    const queryConditions = { event: id };
+    const orConditions = [];
+
+    // Search by email (case-insensitive)
+    orConditions.push({ 'owner.email': { $regex: search, $options: 'i' } });
+
+    // Search by ticket ID if it's a valid ObjectId
+    if (mongoose.Types.ObjectId.isValid(search)) {
+      orConditions.push({ _id: mongoose.Types.ObjectId(search) });
+    } else {
+      // Convert _id to string for partial matching
+      orConditions.push({ $expr: { $regexMatch: { input: { $toString: "$_id" }, regex: search, options: 'i' } } });
+    }
+
+    if (orConditions.length === 0) {
+      return res.status(400).json({ status: 'fail', message: 'Invalid search query' });
+    }
+
+    queryConditions.$or = orConditions;
+
+    const tickets = await Ticket.find(queryConditions)
+      .populate('event', 'eventName')
+      .populate('owner', 'firstName lastName email phone location')
+      .limit(10);
+
+    console.log("Found tickets:", tickets);
+
+    if (!tickets || tickets.length === 0) {
+      return res.status(404).json({ status: 'fail', message: 'No tickets found' });
+    }
+
+    const formattedTickets = tickets.map(ticket => ({
+      id: ticket._id.toString(),
+      event: {
+        id: ticket.event._id.toString(),
+        eventName: ticket.event.eventName,
+      },
+      owner: {
+        firstName: ticket.owner.firstName,
+        lastName: ticket.owner.lastName,
+        email: ticket.owner.email,
+      },
+      type: ticket.type,
+      usedAt: ticket.usedAt,
+      status: ticket.isUsed ? 'used' : 'valid',
+    }));
+
+    if (!tickets[0].isUsed) {
+      tickets[0].isUsed = true;
+      tickets[0].usedAt = new Date();
+      await tickets[0].save();
+      console.log("Marked ticket as used:", tickets[0]._id);
+    }
+
+    res.status(200).json({
+      status: 'success',
+      data: { tickets: formattedTickets },
+      message: 'Tickets found',
+    });
+  } catch (error) {
+    console.error('Error searching ticket:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to search ticket',
+      error: error.message,
+    });
+  }
+};
+// controllers/eventController.js
+exports.getCheckins = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({ status: 'fail', message: 'Host not found' });
+    }
+
+    const event = await Event.findById(req.params.id).select('host');
+    if (!event) {
+      return res.status(404).json({ status: 'fail', message: 'Event not found' });
+    }
+
+    if (event.host.toString() !== host._id.toString()) {
+      return res.status(403).json({
+        status: 'fail',
+        message: 'You are not authorized to view check-ins for this event',
+      });
+    }
+
+    const checkins = await Ticket.find({
+      event: req.params.id,
+      isUsed: true
+    })
+      .populate('owner', 'email firstName lastName')
+      .select('usedAt price type');
+
+    const formattedCheckins = checkins.map(ticket => ({
+      guestEmail: ticket.owner.email,
+      dateTime: ticket.usedAt,
+      count: 1, // Individual ticket
+      amount: ticket.price,
+      status: 'Used'
+    }));
+
+    res.status(200).json({
+      status: 'success',
+      data: { checkins: formattedCheckins },
+    });
+  } catch (error) {
+    console.error('Error fetching check-ins:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch check-ins',
+      error: error.message,
+    });
+  }
+};
+
+
+// controllers/eventController.js
+exports.getTicketBuyers = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({ status: 'fail', message: 'Host not found' });
+    }
+
+    const event = await Event.findById(req.params.id).select('host');
+    if (!event) {
+      return res.status(404).json({ status: 'fail', message: 'Event not found' });
+    }
+
+    if (event.host.toString() !== host._id.toString()) {
+      return res.status(403).json({
+        status: 'fail',
+        message: 'You are not authorized to view ticket buyers for this event',
+      });
+    }
+
+    const tickets = await Ticket.find({ event: req.params.id })
+      .populate('owner', 'firstName lastName email phone location')
+      .select('isUsed type price');
+
+    const guests = tickets.map(ticket => ({
+      name: `${ticket.owner.firstName} ${ticket.owner.lastName}`,
+      email: ticket.owner.email,
+      phone: ticket.owner.phone || '—',
+      location: ticket.owner.location || '—',
+      checkedIn: ticket.isUsed,
+    }));
+
+    res.status(200).json({
+      status: 'success',
+      data: { guests },
+    });
+  } catch (error) {
+    console.error('Error fetching ticket buyers:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch ticket buyers',
+      error: error.message,
+    });
+  }
+};
+
+
+// controllers/eventController.js
+exports.getPayouts = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({ status: 'fail', message: 'Host not found' });
+    }
+
+    const { id } = req.params;
+    const event = await Event.findById(id).select('host');
+    if (!event) {
+      return res.status(404).json({ status: 'fail', message: 'Event not found' });
+    }
+
+    if (event.host.toString() !== host._id.toString()) {
+      return res.status(403).json({
+        status: 'fail',
+        message: 'You are not authorized to view payouts for this event',
+      });
+    }
+
+    const payouts = await Payout.find({ event: id });
+    console.log("Payouts fetched:", payouts);
+
+    res.status(200).json({
+      status: 'success',
+      data: { payouts },
+      message: 'Payouts retrieved successfully',
+    });
+  } catch (error) {
+    console.error('Error fetching payouts:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch payouts',
+      error: error.message,
+    });
   }
 };

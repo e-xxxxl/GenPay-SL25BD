@@ -102,7 +102,17 @@ const eventSchema = new mongoose.Schema(
         name: { type: String, required: true },
         price: { type: Number, required: true, min: 0 },
         quantity: { type: Number, required: true, min: 0 },
-        id: { type: Number, unique: true }, // Temporary unique ID
+        ticketType: { type: String, enum: ['Individual', 'Group'], default: 'Individual' },
+        ticketDescription: { type: String },
+        groupSize: { type: String, default: 'Unlimited Quantity' },
+        groupPrice: { type: Number, min: 0 },
+        groupPriceCurrency: { type: String, default: 'USD' },
+        perTicketPrice: { type: Number, min: 0 },
+        perTicketCurrency: { type: String, default: 'USD' },
+        purchaseLimit: { type: Number, min: 0 },
+        perks: [{ type: String }],
+        transferFees: { type: Boolean, default: false },
+        id: { type: String, required: true },
       },
     ],
     ticketPolicy: {
@@ -130,6 +140,13 @@ eventSchema.pre('validate', function (next) {
     next();
   }
 });
+
+// Pre-save hook to set isPublished based on tickets
+eventSchema.pre('save', function (next) {
+  this.isPublished = this.tickets && this.tickets.length > 0;
+  next();
+});
+
 
 const Event = mongoose.model('Event', eventSchema);
 module.exports = Event;

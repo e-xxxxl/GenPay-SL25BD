@@ -16,6 +16,8 @@ const connectDB = async () => {
     await mongoose.connect(mongoURI, options);
     console.log(`MongoDB Connected: ${mongoose.connection.host}`);
 
+
+
     // 4. Event listeners for reconnection/disconnects
     mongoose.connection.on('error', (err) => {
       console.error(`MongoDB Connection Error: ${err.message}`);
