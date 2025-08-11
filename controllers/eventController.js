@@ -1716,16 +1716,26 @@ exports.scanTicket = async (req, res) => {
       return res.status(404).json({ status: 'fail', message: 'Host not found' });
     }
 
-    const { qrCode } = req.body;
+    let { qrCode } = req.body;
     if (!qrCode) {
       return res.status(400).json({ status: 'fail', message: 'QR code is required' });
+    }
+
+    // Parse QR code if it's JSON
+    try {
+      const parsed = JSON.parse(qrCode);
+      qrCode = parsed.ticketId || qrCode; // Fallback to raw qrCode if no ticketId
+      console.log("Parsed QR code ticketId:", qrCode);
+    } catch (e) {
+      console.warn("QR code is not JSON, using raw value:", qrCode);
     }
 
     console.log("Scanning ticket:", qrCode);
     const ticket = await Ticket.findOne({
       $or: [
         { _id: mongoose.Types.ObjectId.isValid(qrCode) ? qrCode : null },
-        { qrCode }, // If your tickets have a specific qrCode field
+        { ticketId: qrCode }, // If your tickets have a specific ticketId field
+        { qrCode }, // If your tickets store the QR code directly
       ],
     })
       .populate('event', 'eventName host')
@@ -1746,18 +1756,20 @@ exports.scanTicket = async (req, res) => {
       return res.status(400).json({
         status: 'fail',
         message: 'Ticket has already been used',
-        data: { ticket: {
-          id: ticket._id.toString(),
-          event: { id: ticket.event._id.toString(), eventName: ticket.event.eventName },
-          owner: {
-            firstName: ticket.owner.firstName,
-            lastName: ticket.owner.lastName,
-            email: ticket.owner.email,
+        data: {
+          ticket: {
+            id: ticket._id.toString(),
+            event: { id: ticket.event._id.toString(), eventName: ticket.event.eventName },
+            owner: {
+              firstName: ticket.owner.firstName,
+              lastName: ticket.owner.lastName,
+              email: ticket.owner.email,
+            },
+            type: ticket.type,
+            usedAt: ticket.usedAt,
+            status: 'used',
           },
-          type: ticket.type,
-          usedAt: ticket.usedAt,
-          status: 'used',
-        }},
+        },
       });
     }
 
