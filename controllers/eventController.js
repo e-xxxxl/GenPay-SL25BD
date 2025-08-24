@@ -1,3 +1,4 @@
+// controllers/eventController.js
 const Event = require('../models/event');
 const Host = require('../models/host');
 const jwt = require('jsonwebtoken');
@@ -8,7 +9,7 @@ const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 const User = require('../models/user');
 const Ticket = require('../models/ticket');
-const Payout = require('../models/payout')
+const Payout = require('../models/payout');
 const QRCode = require('qrcode');
 
 // Create a new event
@@ -200,9 +201,6 @@ exports.createEvent = async (req, res) => {
   }
 };
 
-
-
-
 // Set up Multer for file handling
 const storage = multer.memoryStorage();
 const upload = multer({
@@ -216,96 +214,7 @@ const upload = multer({
   },
 }).single('eventImage'); // Match the field name from frontend FormData
 
-exports.getEvents = async (req, res) => {
-  try {
-    // 1) Verify authentication
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) {
-      return res.status(401).json({
-        status: 'fail',
-        message: 'No authentication token provided',
-      });
-    }
-
-    let decoded;
-    try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
-    } catch (err) {
-      return res.status(401).json({
-        status: 'fail',
-        message: 'Invalid or expired token',
-      });
-    }
-
-    const host = await Host.findById(decoded.id);
-    if (!host) {
-      return res.status(404).json({
-        status: 'fail',
-        message: 'Host not found',
-      });
-    }
-
-    // 2) Fetch events for the authenticated host
-    const events = await Event.find({ host: host._id })
-      .populate('host', 'displayName userType firstName lastName organizationName')
-      .select(
-        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images capacity tickets isPublished createdAt ticketPolicy'
-      );
-
-    // 3) Map events to match the format expected by ThirdSection
-    const formattedEvents = events.map((event) => ({
-      id: event._id.toString(),
-      title: event.eventName,
-      description: event.eventDescription,
-      category: event.eventCategory,
-      date: event.startDateTime,
-      endDate: event.endDateTime,
-      location: event.eventLocation.venue,
-      locationTips: event.eventLocation.locationTips || null,
-      url: event.eventUrl || null,
-      image: event.headerImage || null,
-      poster: event.headerImage || null,
-      attendees: event.tickets ? event.tickets.length : 0,
-      socialLinks: {
-        instagram: event.socialLinks.instagram || null,
-        twitter: event.socialLinks.twitter || null,
-        snapchat: event.socialLinks.snapchat || null,
-        tiktok: event.socialLinks.tiktok || null,
-        website: event.socialLinks.website || null,
-      },
-      host: {
-        id: event.host._id.toString(),
-        displayName: event.host.displayName,
-        userType: event.host.userType,
-        firstName: event.host.firstName || null,
-        lastName: event.host.lastName || null,
-        organizationName: event.host.organizationName || null,
-      },
-      isPublished: event.isPublished,
-      createdAt: event.createdAt,
-      ticketPolicy: {
-        refundPolicy: event.ticketPolicy?.refundPolicy || null,
-        transferPolicy: event.ticketPolicy?.transferPolicy || null,
-        otherRules: event.ticketPolicy?.otherRules || null,
-      },
-    }));
-
-    res.status(200).json({
-      status: 'success',
-      data: {
-        events: formattedEvents,
-      },
-    });
-  } catch (error) {
-    console.error('Error fetching events:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to fetch events',
-    });
-  }
-};
-
-
+// Get all events for the authenticated host
 exports.getEvents = async (req, res) => {
   try {
     // 1) Verify authentication
@@ -337,54 +246,62 @@ exports.getEvents = async (req, res) => {
 
     // 2) Fetch events with pagination
     const page = parseInt(req.query.page) || 1;
-    const limit = 6; // Number of events per page
+    const limit = 30; // Number of events per page
     const skip = (page - 1) * limit;
 
     const events = await Event.find({ host: host._id })
       .populate('host', 'displayName userType firstName lastName organizationName')
       .select(
-        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images capacity tickets isPublished createdAt'
+        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images capacity tickets isPublished createdAt ticketPolicy'
       )
       .skip(skip)
       .limit(limit);
 
     // 3) Validate and map events
-    const formattedEvents = events.map((event) => {
-      if (!event.eventName) {
-        console.warn(`Event ${event._id} is missing eventName, using fallback`);
-      }
-      return {
-        id: event._id.toString(),
-        title: event.eventName || `Unnamed Event ${event._id.toString().slice(-6)}`, // More specific fallback
-        description: event.eventDescription || 'No description',
-        category: event.eventCategory,
-        date: event.startDateTime,
-        endDate: event.endDateTime,
-        location: event.eventLocation?.venue || 'Unknown Location',
-        locationTips: event.eventLocation?.locationTips || null,
-        url: event.eventUrl || null,
-        image: event.headerImage || null,
-        poster: event.headerImage || null,
-        attendees: event.tickets ? event.tickets.length : 0,
-        socialLinks: {
-          instagram: event.socialLinks?.instagram || null,
-          twitter: event.socialLinks?.twitter || null,
-          snapchat: event.socialLinks?.snapchat || null,
-          tiktok: event.socialLinks?.tiktok || null,
-          website: event.socialLinks?.website || null,
-        },
-        host: {
-          id: event.host._id.toString(),
-          displayName: event.host.displayName,
-          userType: event.host.userType,
-          firstName: event.host.firstName || null,
-          lastName: event.host.lastName || null,
-          organizationName: event.host.organizationName || null,
-        },
-        isPublished: event.isPublished,
-        createdAt: event.createdAt,
-      };
-    });
+    const formattedEvents = await Promise.all(
+      events.map(async (event) => {
+        if (!event.eventName) {
+          console.warn(`Event ${event._id} is missing eventName, using fallback`);
+        }
+        return {
+          id: event._id.toString(),
+          title: event.eventName || `Unnamed Event ${event._id.toString().slice(-6)}`,
+          description: event.eventDescription || 'No description',
+          category: event.eventCategory,
+          date: event.startDateTime,
+          endDate: event.endDateTime,
+          location: event.eventLocation?.venue || 'Unknown Location',
+          locationTips: event.eventLocation?.locationTips || null,
+          url: event.eventUrl || null,
+          image: event.headerImage || null,
+          poster: event.headerImage || null,
+          attendees: await Ticket.countDocuments({ event: event._id }), // Await the ticket count
+          socialLinks: {
+            instagram: event.socialLinks?.instagram || null,
+            twitter: event.socialLinks?.twitter || null,
+            snapchat: event.socialLinks?.snapchat || null,
+            tiktok: event.socialLinks?.tiktok || null,
+            website: event.socialLinks?.website || null,
+          },
+          host: {
+            id: event.host._id.toString(),
+            displayName: event.host.displayName,
+            userType: event.host.userType,
+            firstName: event.host.firstName || null,
+            lastName: event.host.lastName || null,
+            organizationName: event.host.organizationName || null,
+          },
+          isPublished: event.isPublished,
+          createdAt: event.createdAt,
+          ticketPolicy: {
+            refundPolicy: event.ticketPolicy?.refundPolicy || null,
+            transferPolicy: event.ticketPolicy?.transferPolicy || null,
+            otherRules: event.ticketPolicy?.otherRules || null,
+          },
+          tickets: event.tickets || [], // Include tickets array
+        };
+      })
+    );
 
     const totalEvents = await Event.countDocuments({ host: host._id });
     const totalPages = Math.ceil(totalEvents / limit);
@@ -402,10 +319,12 @@ exports.getEvents = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to fetch events',
+      error: error.message,
     });
   }
 };
 
+// Set ticket policy
 exports.setTicketPolicy = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -656,7 +575,7 @@ exports.uploadEventImage = async (req, res) => {
       });
     }
   });
-};;
+};
 
 // Upload gallery image
 exports.uploadGalleryImage = async (req, res) => {
@@ -811,8 +730,7 @@ exports.uploadGalleryImage = async (req, res) => {
   });
 };
 
-// controllers/eventController.js
-// controllers/eventController.js
+// Get event by ID
 exports.getEventById = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -867,6 +785,7 @@ exports.getEventById = async (req, res) => {
   }
 };
 
+// Update event
 exports.updateEvent = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -974,6 +893,7 @@ exports.updateEvent = async (req, res) => {
   }
 };
 
+// Add ticket
 exports.addTicket = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1112,7 +1032,7 @@ exports.addTicket = async (req, res) => {
   }
 };
 
-// Edit Ticket
+// Edit ticket
 exports.editTicket = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1254,7 +1174,7 @@ exports.editTicket = async (req, res) => {
   }
 };
 
-// Delete Ticket
+// Delete ticket
 exports.deleteTicket = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1313,7 +1233,7 @@ exports.deleteTicket = async (req, res) => {
   }
 };
 
-// Get Event Tickets
+// Get event tickets
 exports.getEventTickets = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1333,13 +1253,11 @@ exports.getEventTickets = async (req, res) => {
       return res.status(404).json({ status: 'fail', message: 'Host not found' });
     }
 
-    // Include 'host' in select and populate it
     const event = await Event.findById(req.params.id).select('tickets host').populate('host', '_id');
     if (!event) {
       return res.status(404).json({ status: 'fail', message: 'Event not found' });
     }
 
-    // Validate host field
     if (!event.host || !event.host._id) {
       return res.status(400).json({
         status: 'fail',
@@ -1492,11 +1410,11 @@ exports.deleteGalleryImage = async (req, res) => {
   }
 };
 
-
+// Get public events
 exports.getPublicEvents = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    const limit = 12;
+    const limit = 50;
     const skip = (page - 1) * limit;
 
     const events = await Event.find({ isPublished: true })
@@ -1521,8 +1439,8 @@ exports.getPublicEvents = async (req, res) => {
       },
       eventUrl: event.eventUrl || null,
       headerImage: event.headerImage || null,
-      images: event.images || [], // Ensured
-      socialLinks: event.socialLinks || {}, // Ensured
+      images: event.images || [],
+      socialLinks: event.socialLinks || {},
       tickets: event.tickets || [],
       host: {
         displayName: event.host?.displayName || 'Unknown Host',
@@ -1549,7 +1467,7 @@ exports.getPublicEvents = async (req, res) => {
   }
 };
 
-// controllers/eventController.js
+// Purchase ticket
 exports.purchaseTicket = async (req, res) => {
   try {
     const { eventId, tickets, customer } = req.body;
@@ -1568,7 +1486,6 @@ exports.purchaseTicket = async (req, res) => {
       });
     }
 
-    // Find or create user by email
     let user = await User.findOne({ email });
     if (!user) {
       user = await User.create({ firstName, lastName, email, phone, location });
@@ -1594,7 +1511,7 @@ exports.purchaseTicket = async (req, res) => {
 
       for (let i = 0; i < quantity; i++) {
         const qrCodeData = {
-          ticketId: uuidv4(), // Generate ticketId
+          ticketId: uuidv4(),
           eventId: event._id,
           eventName: event.eventName,
           ticketType: ticket.name,
@@ -1621,7 +1538,7 @@ exports.purchaseTicket = async (req, res) => {
           type: ticket.name.toLowerCase().replace(/\s+/g, '-'),
           price: ticket.price,
           qrCode: qrCodeUrl,
-          ticketId: qrCodeData.ticketId, // Set ticketId
+          ticketId: qrCodeData.ticketId,
         });
 
         purchasedTickets.push(newTicket);
@@ -1647,9 +1564,7 @@ exports.purchaseTicket = async (req, res) => {
   }
 };
 
-// controllers/eventController.js
-
-// controllers/eventController.js
+// Search ticket
 exports.searchTicket = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(" ")[1];
@@ -1682,7 +1597,6 @@ exports.searchTicket = async (req, res) => {
       });
     }
 
-    // Find users matching the email
     const users = await User.find({ email: { $regex: search, $options: "i" } }).select("_id email firstName lastName phone location");
     console.log("Found users:", users.map(u => ({ id: u._id.toString(), email: u.email })));
 
@@ -1690,7 +1604,6 @@ exports.searchTicket = async (req, res) => {
       return res.status(404).json({ status: "fail", message: "No users found with the provided email" });
     }
 
-    // Find tickets for the event where owner is in the matched users or ticketId matches
     const tickets = await Ticket.find({
       event: id,
       $or: [
@@ -1746,8 +1659,7 @@ exports.searchTicket = async (req, res) => {
   }
 };
 
-
-// controllers/eventController.js
+// Check-in ticket
 exports.checkInTicket = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(" ")[1];
@@ -1781,7 +1693,6 @@ exports.checkInTicket = async (req, res) => {
       });
     }
 
-    // Find ticket by ticketId or _id
     const query = {
       event: id,
       $or: [
@@ -1799,12 +1710,10 @@ exports.checkInTicket = async (req, res) => {
       return res.status(400).json({ status: "fail", message: "Ticket already used" });
     }
 
-    // Set ticketId if missing to avoid validation error
     if (!ticket.ticketId) {
       ticket.ticketId = uuidv4();
     }
 
-    // Update ticket to mark as used
     ticket.isUsed = true;
     ticket.usedAt = new Date();
     await ticket.save();
@@ -1842,9 +1751,8 @@ exports.checkInTicket = async (req, res) => {
     });
   }
 };
-// controllers/eventController.js
 
-
+// Get check-ins
 exports.getCheckins = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1899,8 +1807,7 @@ exports.getCheckins = async (req, res) => {
   }
 };
 
-
-// controllers/eventController.js
+// Get ticket buyers
 exports.getTicketBuyers = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1952,8 +1859,7 @@ exports.getTicketBuyers = async (req, res) => {
   }
 };
 
-
-// controllers/eventController.js
+// Get payouts
 exports.getPayouts = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1993,6 +1899,84 @@ exports.getPayouts = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to fetch payouts',
+      error: error.message,
+    });
+  }
+};
+
+exports.deleteEvent = async (req, res) => {
+  try {
+    // 1) Verify authentication
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'No authentication token provided',
+      });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'Invalid or expired token',
+      });
+    }
+
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({
+        status: 'fail',
+        message: 'Host not found',
+      });
+    }
+
+    // 2) Validate event ID
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Invalid event ID',
+      });
+    }
+
+    // 3) Find the event and verify ownership
+    const event = await Event.findById(id).select('host');
+    if (!event) {
+      return res.status(404).json({
+        status: 'fail',
+        message: 'Event not found',
+      });
+    }
+
+    if (!event.host || event.host.toString() !== host._id.toString()) {
+      return res.status(403).json({
+        status: 'fail',
+        message: 'You are not authorized to delete this event',
+      });
+    }
+
+    // 4) Delete associated tickets
+    await Ticket.deleteMany({ event: id });
+
+    // 5) Remove event from host's events array
+    host.events = host.events.filter((eventId) => eventId.toString() !== id);
+    await host.save({ validateBeforeSave: false });
+
+    // 6) Delete the event
+    await Event.findByIdAndDelete(id);
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Event deleted successfully',
+    });
+  } catch (error) {
+    console.error('Error deleting event:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to delete event',
       error: error.message,
     });
   }
