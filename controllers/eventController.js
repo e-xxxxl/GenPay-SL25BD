@@ -10,7 +10,24 @@ const { v4: uuidv4 } = require('uuid');
 const User = require('../models/user');
 const Ticket = require('../models/ticket');
 const Payout = require('../models/payout');
+const Transaction = require('../models/transaction');
 const QRCode = require('qrcode');
+const nodemailer = require('nodemailer');
+
+// Zoho Mail Transporter Configuration
+const transporter = nodemailer.createTransport({
+  host: 'smtp.zoho.com',
+  port: 465, // SSL port
+  secure: true,
+  auth: {
+    user: process.env.ZOHO_EMAIL,
+    pass: process.env.ZOHO_APP_PASSWORD,
+  },
+  tls: {
+    rejectUnauthorized: false // Only for development/testing
+  }
+});
+
 
 // Create a new event
 exports.createEvent = async (req, res) => {
@@ -1411,18 +1428,22 @@ exports.deleteGalleryImage = async (req, res) => {
 };
 
 // Get public events
+// Get public events
 exports.getPublicEvents = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = 50;
-    const skip = (page - 1) * limit;
+    // Get current date and time in WAT (UTC+1)
+    const now = new Date();
+    now.setHours(now.getHours() + 1); // Adjust to WAT (UTC+1)
 
-    const events = await Event.find({ isPublished: true })
+    // Query for published events starting from now or later, sorted by startDateTime
+    const events = await Event.find({
+      isPublished: true,
+      startDateTime: { $gte: now }, // Only include current or future events
+    })
+      .sort({ startDateTime: 1 }) // Sort by startDateTime in ascending order
       .select(
-        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images tickets'
+        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images tickets slug' // Added slug
       )
-      .skip(skip)
-      .limit(limit)
       .populate('host', 'displayName');
 
     const formattedEvents = events.map(event => ({
@@ -1445,17 +1466,18 @@ exports.getPublicEvents = async (req, res) => {
       host: {
         displayName: event.host?.displayName || 'Unknown Host',
       },
+      slug: event.slug || event.eventName
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/-+/g, '-')
+        .trim(), // Fallback for legacy events
     }));
-
-    const totalEvents = await Event.countDocuments({ isPublished: true });
-    const totalPages = Math.ceil(totalEvents / limit);
 
     res.status(200).json({
       status: 'success',
       data: {
         events: formattedEvents,
-        totalPages,
-        currentPage: page,
+        totalEvents: formattedEvents.length,
       },
     });
   } catch (error) {
@@ -1463,108 +1485,415 @@ exports.getPublicEvents = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to fetch public events',
-    });
-  }
-};
-
-// Purchase ticket
-exports.purchaseTicket = async (req, res) => {
-  try {
-    const { eventId, tickets, customer } = req.body;
-    if (!eventId || !tickets || !Array.isArray(tickets) || !customer) {
-      return res.status(400).json({
-        status: 'fail',
-        message: 'Event ID, tickets array, and customer details are required',
-      });
-    }
-
-    const { firstName, lastName, email, phone, location } = customer;
-    if (!firstName || !lastName || !email || !phone || !location) {
-      return res.status(400).json({
-        status: 'fail',
-        message: 'Customer details (firstName, lastName, email, phone, location) are required',
-      });
-    }
-
-    let user = await User.findOne({ email });
-    if (!user) {
-      user = await User.create({ firstName, lastName, email, phone, location });
-    }
-
-    const event = await Event.findById(eventId).populate('host', 'displayName firstName lastName organizationName');
-    if (!event) {
-      return res.status(404).json({ status: 'fail', message: 'Event not found' });
-    }
-
-    const purchasedTickets = [];
-    for (const { ticketId, quantity } of tickets) {
-      const ticket = event.tickets.find((t) => t.id === ticketId);
-      if (!ticket) {
-        return res.status(404).json({ status: 'fail', message: `Ticket ${ticketId} not found` });
-      }
-      if (ticket.quantity < quantity) {
-        return res.status(400).json({
-          status: 'fail',
-          message: `Insufficient quantity for ticket ${ticket.name}`,
-        });
-      }
-
-      for (let i = 0; i < quantity; i++) {
-        const qrCodeData = {
-          ticketId: uuidv4(),
-          eventId: event._id,
-          eventName: event.eventName,
-          ticketType: ticket.name,
-          customer: {
-            firstName,
-            lastName,
-            email,
-            phone,
-            location,
-          },
-          host: {
-            displayName: event.host.displayName,
-            firstName: event.host.firstName || null,
-            lastName: event.host.lastName || null,
-            organizationName: event.host.organizationName || null,
-          },
-          purchaseDate: new Date(),
-        };
-        const qrCodeUrl = await QRCode.toDataURL(JSON.stringify(qrCodeData));
-
-        const newTicket = await Ticket.create({
-          event: eventId,
-          owner: user._id,
-          type: ticket.name.toLowerCase().replace(/\s+/g, '-'),
-          price: ticket.price,
-          qrCode: qrCodeUrl,
-          ticketId: qrCodeData.ticketId,
-        });
-
-        purchasedTickets.push(newTicket);
-      }
-
-      ticket.quantity -= quantity;
-    }
-
-    await event.save({ validateBeforeSave: true });
-
-    res.status(201).json({
-      status: 'success',
-      data: { tickets: purchasedTickets },
-      message: 'Tickets purchased successfully',
-    });
-  } catch (error) {
-    console.error('Error purchasing tickets:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to purchase tickets',
       error: error.message,
     });
   }
 };
+// Get public event by sanitized eventName
+// exports.getPublicEventByName = async (req, res) => {
+//   try {
+//     const { eventName } = req.params;
 
+//     // Get current date and time in WAT (UTC+1)
+//     const now = new Date();
+//     now.setHours(now.getHours() + 1); // Adjust to WAT
+
+//     // Find the event by eventName (case-insensitive) and ensure it's published and not expired
+//     const event = await Event.findOne({
+//       isPublished: true,
+//       startDateTime: { $gte: now },
+//       eventName: { $regex: `^${eventName.replace(/-/g, ' ')}$`, $options: 'i' }, // Reverse sanitization for matching
+//     })
+//       .select(
+//         'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images tickets'
+//       )
+//       .populate('host', 'displayName');
+
+//     if (!event) {
+//       return res.status(404).json({
+//         status: 'error',
+//         message: 'Event not found or not available',
+//       });
+//     }
+
+//     const formattedEvent = {
+//       _id: event._id.toString(),
+//       eventName: event.eventName || `Unnamed Event ${event._id.toString().slice(-6)}`,
+//       eventDescription: event.eventDescription || 'No description',
+//       eventCategory: event.eventCategory,
+//       startDateTime: event.startDateTime,
+//       endDateTime: event.endDateTime,
+//       eventLocation: {
+//         venue: event.eventLocation?.venue || 'Unknown Location',
+//         locationTips: event.eventLocation?.locationTips || null,
+//         address: event.eventLocation?.address || {},
+//       },
+//       eventUrl: event.eventUrl || null,
+//       headerImage: event.headerImage || null,
+//       images: event.images || [],
+//       socialLinks: event.socialLinks || {},
+//       tickets: event.tickets || [],
+//       host: {
+//         displayName: event.host?.displayName || 'Unknown Host',
+//       },
+//     };
+
+//     res.status(200).json({
+//       status: 'success',
+//       data: {
+//         event: formattedEvent,
+//       },
+//     });
+//   } catch (error) {
+//     console.error('Error fetching event by name:', error);
+//     res.status(500).json({
+//       status: 'error',
+//       message: 'Failed to fetch event',
+//       error: error.message,
+//     });
+//   }
+// };
+
+
+// Purchase ticket
+exports.purchaseTicket = async (req, res) => {
+  try {
+    const { eventId, tickets, reference, fees } = req.body; // Add fees to request body
+
+    // Validate input
+    if (!eventId || !tickets || !Array.isArray(tickets) || tickets.length === 0 || typeof fees !== 'number') {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Missing required fields: eventId, tickets array, or fees',
+      });
+    }
+
+    console.log('Purchase ticket request body:', JSON.stringify(req.body, null, 2));
+
+    // Find event
+    const event = await Event.findById(eventId).select(
+      'eventName startDateTime endDateTime eventLocation tickets host'
+    );
+    if (!event) {
+      return res.status(404).json({
+        status: 'fail',
+        message: 'Event not found',
+      });
+    }
+
+    if (!event.host) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Event has no associated host',
+      });
+    }
+
+    // Validate tickets and calculate subtotal
+    let subtotal = 0;
+    const createdTickets = [];
+    const emailTicketsMap = {};
+
+    for (const ticketPurchase of tickets) {
+      const { ticketId, customer, quantity = 1 } = ticketPurchase;
+      if (!ticketId || !customer?.email || !customer.firstName || !customer.lastName) {
+        console.error('Invalid ticket purchase:', { ticketId, customer });
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Invalid ticketId or missing customer data (email, firstName, lastName)',
+        });
+      }
+
+      const eventTicket = event.tickets.find((t) => t.id === ticketId);
+      if (!eventTicket) {
+        return res.status(404).json({
+          status: 'fail',
+          message: `Ticket with ID ${ticketId} not found in event`,
+        });
+      }
+
+      console.log('Event ticket:', JSON.stringify(eventTicket, null, 2));
+
+      // Validate price and quantity
+      const price = Number(eventTicket.price);
+      if (!Number.isFinite(price) || price < 0) {
+        console.error('Invalid price for ticket:', { ticketId, price: eventTicket.price });
+        return res.status(400).json({
+          status: 'fail',
+          message: `Invalid price for ticket ID ${ticketId}`,
+        });
+      }
+
+      if (!Number.isInteger(eventTicket.quantity) || eventTicket.quantity < quantity) {
+        return res.status(400).json({
+          status: 'fail',
+          message: `Not enough ${eventTicket.name} tickets available`,
+        });
+      }
+
+      // Calculate ticket amount
+      const ticketAmount = price * quantity;
+      console.log(`Calculating: ${price} * ${quantity} = ${ticketAmount}`);
+      if (!Number.isFinite(ticketAmount)) {
+        console.error('Invalid ticket amount:', { ticketId, price, quantity });
+        return res.status(400).json({
+          status: 'fail',
+          message: `Invalid ticket amount for ticket ID ${ticketId}`,
+        });
+      }
+      subtotal += ticketAmount;
+
+      // Update ticket quantity
+      eventTicket.quantity -= quantity;
+
+      // Find or create User for this attendee
+      let user = await User.findOne({ email: customer.email });
+      if (!user) {
+        user = await User.create({
+          firstName: customer.firstName,
+          lastName: customer.lastName,
+          email: customer.email,
+          phone: customer.phone || '',
+          location: customer.location || '',
+        });
+      }
+
+      // Generate QR codes and create ticket records
+      for (let i = 0; i < quantity; i++) {
+        const ticketUUID = uuidv4();
+        const qrCodeData = JSON.stringify({
+          eventId: eventId,
+          eventName: event.eventName,
+          ticketId: ticketUUID,
+          ticketName: eventTicket.name,
+          ticketType: eventTicket.ticketType,
+          price: price,
+          buyerName: `${user.firstName} ${user.lastName}`,
+          buyerEmail: user.email,
+          startDateTime: event.startDateTime,
+          venue: event.eventLocation.venue,
+        });
+
+        const qrCodeUrl = await new Promise((resolve, reject) => {
+          QRCode.toBuffer(qrCodeData, { errorCorrectionLevel: 'H' }, (err, buffer) => {
+            if (err) return reject(err);
+            const uploadStream = cloudinary.uploader.upload_stream(
+              {
+                folder: 'genpay/tickets',
+                public_id: `ticket_${ticketUUID}`,
+                resource_type: 'image',
+              },
+              (error, result) => {
+                if (error) return reject(error);
+                resolve(result.secure_url);
+              }
+            );
+            require('stream').Readable.from(buffer).pipe(uploadStream);
+          });
+        });
+
+        const newTicket = await Ticket.create({
+          event: eventId,
+          name: eventTicket.name,
+          type: eventTicket.ticketType,
+          price: price,
+          quantity: 1,
+          buyer: user._id,
+          ticketId: ticketUUID,
+          qrCode: qrCodeUrl,
+        });
+
+        createdTickets.push(newTicket);
+
+        // Group tickets by email for sending emails
+        if (!emailTicketsMap[customer.email]) {
+          emailTicketsMap[customer.email] = {
+            customer: {
+              firstName: customer.firstName,
+              lastName: customer.lastName,
+              email: customer.email,
+            },
+            tickets: [],
+          };
+        }
+        emailTicketsMap[customer.email].tickets.push({
+          type: newTicket.name.toUpperCase(),
+          price: newTicket.price,
+          qrCode: newTicket.qrCode,
+          ticketId: newTicket.ticketId,
+          buyerName: `${user.firstName} ${user.lastName}`,
+          eventName: event.eventName,
+          venue: event.eventLocation.venue,
+        });
+      }
+    }
+
+    console.log('Subtotal:', subtotal, 'Fees:', fees, 'Total:', subtotal + fees);
+
+    // Validate total
+    const totalAmount = subtotal + fees;
+    if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
+      return res.status(400).json({
+        status: 'fail',
+        message: 'Invalid total amount calculated',
+      });
+    }
+
+    // Save updated event
+    await event.save({ validateBeforeSave: true });
+
+    // Update host balance
+    console.log('Updating host balance for host ID:', event.host, 'with amount:', subtotal);
+    const hostUpdate = await Host.findByIdAndUpdate(
+      event.host,
+      { $inc: { availableBalance: subtotal } }, // Only ticket amount (excl. fees) goes to host
+      { new: true, runValidators: true }
+    );
+    if (!hostUpdate) {
+      console.error('Host not found for ID:', event.host);
+      return res.status(404).json({
+        status: 'fail',
+        message: 'Host not found',
+      });
+    }
+    console.log('Host updated:', JSON.stringify(hostUpdate, null, 2));
+
+    // Create transaction record
+    const transaction = await Transaction.create({
+      event: eventId,
+      tickets: createdTickets.map((t) => t._id),
+      reference,
+      amount: subtotal,
+      fees,
+      total: totalAmount,
+      paymentProvider: 'paystack',
+      status: 'completed',
+    });
+
+    // Format date and time
+    const startDateTime = new Date(event.startDateTime);
+    const endDateTime = new Date(event.endDateTime);
+    const formattedDate = startDateTime.toLocaleDateString('en-US', {
+      month: 'long',
+      day: 'numeric',
+      year: 'numeric',
+      timeZone: 'Africa/Lagos',
+    });
+    const formattedStartTime = startDateTime.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: true,
+      timeZone: 'Africa/Lagos',
+    });
+    const formattedEndTime = endDateTime.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: 'numeric',
+      hour12: true,
+      timeZone: 'Africa/Lagos',
+    });
+
+    // Send emails to each unique email address
+    for (const [email, { customer, tickets }] of Object.entries(emailTicketsMap)) {
+      const mailOptions = {
+        from: `"Genpay Events" <${process.env.ZOHO_EMAIL}>`,
+        to: email,
+        subject: `Ticket Confirmation for ${event.eventName}`,
+        html: `
+          <h1>Ticket Confirmation</h1>
+          <p>Dear ${customer.firstName} ${customer.lastName},</p>
+          <p>Thank you for purchasing tickets for <strong>${event.eventName}</strong>!</p>
+          <h2>Event Details</h2>
+          <p><strong>Event:</strong> ${event.eventName}</p>
+          <p><strong>Date:</strong> ${formattedDate}</p>
+          <p><strong>Time:</strong> ${formattedStartTime} - ${formattedEndTime}</p>
+          <p><strong>Venue:</strong> ${event.eventLocation.venue}</p>
+          <h2>Ticket Details</h2>
+          ${tickets
+            .map(
+              (t) => `
+            <p>
+              <strong>Ticket Type:</strong> ${t.type}<br>
+              <strong>Ticket ID:</strong> ${t.ticketId}<br>
+              <strong>Price:</strong> ₦${t.price.toLocaleString('en-NG')}<br>
+              <strong>Buyer:</strong> ${t.buyerName}<br>
+              <strong>Event:</strong> ${t.eventName}<br>
+              <strong>Venue:</strong> ${t.venue}<br>
+              <strong>Date:</strong> ${formattedDate}<br>
+              <strong>Time:</strong> ${formattedStartTime} - ${formattedEndTime}<br>
+              <img src="${t.qrCode}" alt="QR Code" style="width: 150px; height: 150px; margin-top: 10px;">
+            </p>
+          `
+            )
+            .join('')}
+          <h2>Transaction Details</h2>
+          <p><strong>Reference:</strong> ${reference || 'N/A'}</p>
+          <p><strong>Subtotal:</strong> ₦${subtotal.toLocaleString('en-NG')}</p>
+          <p><strong>Fees:</strong> ₦${fees.toLocaleString('en-NG')}</p>
+          <p><strong>Total Amount:</strong> ₦${totalAmount.toLocaleString('en-NG')}</p>
+          <p>Please present the QR code(s) at the event for entry. Save this email or download the QR codes.</p>
+          <p>If you have any questions, contact us at <a href="mailto:${process.env.ZOHO_EMAIL}">${process.env.ZOHO_EMAIL}</a>.</p>
+          <p>Enjoy the event!</p>
+          <p>Best regards,<br>The Genpay Events Team</p>
+        `,
+        attachments: tickets.map((t, index) => ({
+          filename: `ticket_${t.ticketId}.png`,
+          path: t.qrCode,
+          cid: `qrcode${index}`,
+        })),
+      };
+
+      try {
+        await transporter.sendMail(mailOptions);
+      } catch (emailError) {
+        console.error(`Failed to send confirmation email to ${email}:`, emailError);
+      }
+    }
+
+    // Populate buyer details for response
+    const populatedTickets = await Ticket.find({ _id: { $in: createdTickets.map(t => t._id) } })
+      .populate('buyer', 'firstName lastName email');
+
+    // Format response tickets
+    const responseTickets = populatedTickets.map((ticket) => ({
+      _id: ticket._id.toString(),
+      type: ticket.name,
+      price: ticket.price,
+      qrCode: ticket.qrCode,
+      ticketId: ticket.ticketId,
+      buyerName: ticket.buyer ? `${ticket.buyer.firstName} ${ticket.buyer.lastName}` : 'Unknown',
+      buyerEmail: ticket.buyer ? ticket.buyer.email : 'Unknown',
+      eventName: event.eventName,
+      venue: event.eventLocation.venue,
+      date: formattedDate,
+      time: `${formattedStartTime} - ${formattedEndTime}`,
+    }));
+
+    res.status(201).json({
+      status: 'success',
+      data: {
+        tickets: responseTickets,
+        transaction: {
+          _id: transaction._id.toString(),
+          reference: transaction.reference,
+          amount: transaction.amount,
+          fees: transaction.fees,
+          total: transaction.total,
+          paymentProvider: transaction.paymentProvider,
+          createdAt: transaction.createdAt,
+        },
+      },
+      message: 'Tickets purchased successfully and confirmation emails sent',
+    });
+  } catch (error) {
+    console.error('Error purchasing ticket:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to purchase tickets or send confirmation emails',
+      error: error.message,
+    });
+  }
+};
 // Search ticket
+// controllers/eventController.js
 exports.searchTicket = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(" ")[1];
@@ -1597,30 +1926,32 @@ exports.searchTicket = async (req, res) => {
       });
     }
 
-    const users = await User.find({ email: { $regex: search, $options: "i" } }).select("_id email firstName lastName phone location");
-    console.log("Found users:", users.map(u => ({ id: u._id.toString(), email: u.email })));
-
-    if (!users.length) {
-      return res.status(404).json({ status: "fail", message: "No users found with the provided email" });
-    }
-
     const tickets = await Ticket.find({
       event: id,
       $or: [
-        { owner: { $in: users.map(u => u._id) } },
         { ticketId: search },
         ...(mongoose.Types.ObjectId.isValid(search) ? [{ _id: search }] : []),
       ],
     })
-      .populate("event", "eventName")
-      .populate("owner", "firstName lastName email phone location")
+      .populate('buyer', 'email firstName lastName')
+      .populate('event', 'eventName')
       .limit(10);
 
-    console.log("Found tickets:", tickets.map(t => ({
-      ticketId: t.ticketId || t._id.toString(),
-      owner: t.owner ? t.owner.email : "No owner",
-      eventId: t.event._id.toString(),
-    })));
+    // Additional search by buyer email
+    if (!tickets.length) {
+      const users = await User.find({ email: { $regex: search, $options: 'i' } }).select('_id');
+      if (users.length) {
+        const userIds = users.map(user => user._id);
+        const ticketsByEmail = await Ticket.find({
+          event: id,
+          buyer: { $in: userIds },
+        })
+          .populate('buyer', 'email firstName lastName')
+          .populate('event', 'eventName')
+          .limit(10);
+        tickets.push(...ticketsByEmail);
+      }
+    }
 
     if (!tickets.length) {
       return res.status(404).json({ status: "fail", message: "No tickets found for the provided email or ticket ID" });
@@ -1632,12 +1963,10 @@ exports.searchTicket = async (req, res) => {
         id: ticket.event._id.toString(),
         eventName: ticket.event.eventName,
       },
-      owner: {
-        firstName: ticket.owner?.firstName || "Unknown",
-        lastName: ticket.owner?.lastName || "Unknown",
-        email: ticket.owner?.email || "Unknown",
-        phone: ticket.owner?.phone || "—",
-        location: ticket.owner?.location || "—",
+      buyer: {
+        email: ticket.buyer.email,
+        firstName: ticket.buyer.firstName,
+        lastName: ticket.buyer.lastName,
       },
       type: ticket.type,
       usedAt: ticket.usedAt,
@@ -1657,9 +1986,10 @@ exports.searchTicket = async (req, res) => {
       error: error.message,
     });
   }
-};
+};  
 
 // Check-in ticket
+// controllers/eventController.js
 exports.checkInTicket = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(" ")[1];
@@ -1701,7 +2031,7 @@ exports.checkInTicket = async (req, res) => {
       ],
     };
 
-    const ticket = await Ticket.findOne(query).populate("owner", "email firstName lastName phone location");
+    const ticket = await Ticket.findOne(query).populate('buyer', 'email firstName lastName');
     if (!ticket) {
       return res.status(404).json({ status: "fail", message: "Ticket not found" });
     }
@@ -1720,7 +2050,7 @@ exports.checkInTicket = async (req, res) => {
 
     console.log("Ticket checked in:", {
       ticketId: ticket.ticketId || ticket._id.toString(),
-      ownerEmail: ticket.owner?.email,
+      buyer: ticket.buyer.email,
       eventId: ticket.event.toString(),
     });
 
@@ -1729,12 +2059,10 @@ exports.checkInTicket = async (req, res) => {
       data: {
         ticket: {
           id: ticket.ticketId || ticket._id.toString(),
-          owner: {
-            email: ticket.owner?.email || "Unknown",
-            firstName: ticket.owner?.firstName || "Unknown",
-            lastName: ticket.owner?.lastName || "Unknown",
-            phone: ticket.owner?.phone || "—",
-            location: ticket.owner?.location || "—",
+          buyer: {
+            email: ticket.buyer.email,
+            firstName: ticket.buyer.firstName,
+            lastName: ticket.buyer.lastName,
           },
           status: "used",
           usedAt: ticket.usedAt,
@@ -1751,7 +2079,6 @@ exports.checkInTicket = async (req, res) => {
     });
   }
 };
-
 // Get check-ins
 exports.getCheckins = async (req, res) => {
   try {
@@ -1782,11 +2109,11 @@ exports.getCheckins = async (req, res) => {
       event: req.params.id,
       isUsed: true
     })
-      .populate('owner', 'email firstName lastName')
+      .populate('buyer', 'email firstName lastName')
       .select('usedAt price type');
 
     const formattedCheckins = checkins.map(ticket => ({
-      guestEmail: ticket.owner.email,
+      guestEmail: ticket.buyer.email,
       dateTime: ticket.usedAt,
       count: 1, // Individual ticket
       amount: ticket.price,
@@ -1834,14 +2161,14 @@ exports.getTicketBuyers = async (req, res) => {
     }
 
     const tickets = await Ticket.find({ event: req.params.id })
-      .populate('owner', 'firstName lastName email phone location')
+      .populate('buyer', 'firstName lastName email phone location')
       .select('isUsed type price');
 
     const guests = tickets.map(ticket => ({
-      name: `${ticket.owner.firstName} ${ticket.owner.lastName}`,
-      email: ticket.owner.email,
-      phone: ticket.owner.phone || '—',
-      location: ticket.owner.location || '—',
+      name: `${ticket.buyer.firstName} ${ticket.buyer.lastName}`,
+      email: ticket.buyer.email,
+      phone: ticket.buyer.phone || '—',
+      location: ticket.buyer.location || '—',
       checkedIn: ticket.isUsed,
     }));
 
@@ -1903,7 +2230,6 @@ exports.getPayouts = async (req, res) => {
     });
   }
 };
-
 exports.deleteEvent = async (req, res) => {
   try {
     // 1) Verify authentication
@@ -1958,14 +2284,23 @@ exports.deleteEvent = async (req, res) => {
       });
     }
 
-    // 4) Delete associated tickets
+    // 4) Check for purchased tickets
+    const ticketCount = await Ticket.countDocuments({ event: id });
+    if (ticketCount > 0) {
+      return res.status(403).json({
+        status: 'fail',
+        message: 'Cannot delete event: Tickets have already been purchased',
+      });
+    }
+
+    // 5) Delete associated tickets (should be none due to the check above, but included for robustness)
     await Ticket.deleteMany({ event: id });
 
-    // 5) Remove event from host's events array
+    // 6) Remove event from host's events array
     host.events = host.events.filter((eventId) => eventId.toString() !== id);
     await host.save({ validateBeforeSave: false });
 
-    // 6) Delete the event
+    // 7) Delete the event
     await Event.findByIdAndDelete(id);
 
     res.status(200).json({
@@ -1980,4 +2315,75 @@ exports.deleteEvent = async (req, res) => {
       error: error.message,
     });
   }
+};
+
+exports.getEventByName = async (req, res) => {
+  try {
+    const { eventName } = req.params;
+
+    // Get current date and time in WAT (UTC+1)
+    const now = new Date();
+    now.setHours(now.getHours() + 1); // Adjust to WAT
+
+    // Find the event by slug (case-insensitive)
+    const event = await Event.findOne({
+      slug: { $regex: `^${eventName}$`, $options: 'i' },
+      isPublished: true,
+      startDateTime: { $gte: now },
+    })
+      .select(
+        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images tickets slug attendeesCount'
+      )
+      .populate('host', 'displayName');
+
+    if (!event) {
+      return res.status(404).json({
+        status: 'error',
+        message: `Event with slug "${eventName}" not found or not available`,
+      });
+    }
+
+    const formattedEvent = {
+      _id: event._id.toString(),
+      eventName: event.eventName || `Unnamed Event ${event._id.toString().slice(-6)}`,
+      eventDescription: event.eventDescription || 'No description',
+      eventCategory: event.eventCategory || 'Other',
+      startDateTime: event.startDateTime,
+      endDateTime: event.endDateTime,
+      eventLocation: {
+        venue: event.eventLocation?.venue || 'Unknown Location',
+        locationTips: event.eventLocation?.locationTips || null,
+        address: event.eventLocation?.address || {},
+      },
+      eventUrl: event.eventUrl || null,
+      headerImage: event.headerImage || null,
+      images: Array.isArray(event.images) ? event.images : [],
+      socialLinks: event.socialLinks || {},
+      tickets: Array.isArray(event.tickets) ? event.tickets : [],
+      slug: event.slug,
+      attendeesCount: event.attendeesCount || 0,
+      host: {
+        displayName: event.host?.displayName || 'Unknown Host',
+      },
+    };
+
+    res.status(200).json({
+      status: 'success',
+      data: { event: formattedEvent },
+    });
+  } catch (error) {
+    console.error('Error fetching event by slug:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to fetch event',
+      error: error.message,
+    });
+  }
+};
+
+exports.ping = async (req, res) => {
+  res.status(200).json({
+    status: 'success',
+    message: 'Server is awake',
+  });
 };

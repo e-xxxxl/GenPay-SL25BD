@@ -50,6 +50,13 @@ app.use('/api/auth', authRouter);
 
 const eventRoutes = require('./routes/eventRoutes');
 app.use('/api/events', eventRoutes);
+const payoutRoutes = require('./routes/payoutRoutes');
+app.use('/api/payouts', payoutRoutes);
+
+const ticketRouter = require('./routes/ticketRouter');
+
+// ... (other middleware)
+app.use('/api/tickets', ticketRouter)
 // // Auth Routes
 // app.use('/api/auth', require('./routes/authRoutes'));
 

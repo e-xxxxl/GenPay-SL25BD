@@ -1,4 +1,3 @@
-// models/event.js
 const mongoose = require('mongoose');
 
 const eventSchema = new mongoose.Schema(
@@ -12,6 +11,14 @@ const eventSchema = new mongoose.Schema(
       type: String,
       required: [true, 'Event name is required'],
       trim: true,
+      unique: true,
+    },
+    slug: {
+      type: String,
+      unique: true,
+      lowercase: true,
+      trim: true,
+      index: true,
     },
     eventDescription: {
       type: String,
@@ -120,6 +127,11 @@ const eventSchema = new mongoose.Schema(
       transferPolicy: { type: String, trim: true, default: null },
       otherRules: { type: String, trim: true, default: null },
     },
+    attendeesCount: {
+      type: Number,
+      default: 0,
+      min: [0, 'Attendees count cannot be negative'],
+    },
   },
   {
     toJSON: { virtuals: true },
@@ -141,12 +153,18 @@ eventSchema.pre('validate', function (next) {
   }
 });
 
-// Pre-save hook to set isPublished based on tickets
+// Pre-save hook to set isPublished and generate slug
 eventSchema.pre('save', function (next) {
   this.isPublished = this.tickets && this.tickets.length > 0;
+  if (this.eventName && (!this.slug || this.isModified('eventName'))) {
+    this.slug = this.eventName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/-+/g, '-')
+      .trim();
+  }
   next();
 });
-
 
 const Event = mongoose.model('Event', eventSchema);
 module.exports = Event;

@@ -1,3 +1,4 @@
+// models/host.js
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
@@ -13,25 +14,29 @@ const hostSchema = new mongoose.Schema(
       type: String,
       required: function() {
         return this.userType === 'individual';
-      }
+      },
+      trim: true
     },
     lastName: {
       type: String,
       required: function() {
         return this.userType === 'individual';
-      }
+      },
+      trim: true
     },
     organizationName: {
       type: String,
       required: function() {
         return this.userType === 'organization';
-      }
+      },
+      trim: true
     },
-    fullName: {  // New field for organization contact person
+    fullName: {
       type: String,
       required: function() {
         return this.userType === 'organization';
-      }
+      },
+      trim: true
     },
     email: {
       type: String,
@@ -43,11 +48,13 @@ const hostSchema = new mongoose.Schema(
     },
     phoneNumber: {
       type: String,
-      required: true
+      required: true,
+      trim: true
     },
     location: {
       type: String,
-      required: true
+      required: true,
+      trim: true
     },
     password: {
       type: String,
@@ -75,7 +82,31 @@ const hostSchema = new mongoose.Schema(
     },
     verificationToken: String,
     passwordResetToken: String,
-    passwordResetExpires: Date
+    passwordResetExpires: Date,
+    payoutInfo: {
+      bankName: {
+        type: String,
+        trim: true
+      },
+      bankCode: {
+        type: String,
+        trim: true
+      },
+      accountNumber: {
+        type: String,
+        trim: true,
+        match: [/^\d{10}$/, 'Account number must be 10 digits']
+      },
+      accountName: {
+        type: String,
+        trim: true
+      }
+    },
+    availableBalance: {
+      type: Number,
+      default: 0,
+      min: [0, 'Balance cannot be negative']
+    }
   },
   {
     timestamps: true,
@@ -109,6 +140,4 @@ hostSchema.methods.comparePassword = async function(candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-const Host = mongoose.model('Host', hostSchema);
-
-module.exports = Host;
+module.exports = mongoose.model('Host', hostSchema);

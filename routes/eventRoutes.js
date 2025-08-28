@@ -14,6 +14,12 @@ const ticketLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const pingLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 100, // Allow 100 requests per 10 minutes
+  message: 'Too many ping requests, please try again later.',
+});
+
 router
   .route('/create')
   .post(authController.protect, ticketLimiter, eventController.createEvent);
@@ -27,22 +33,24 @@ router
   .post(authController.protect, ticketLimiter, eventController.uploadGalleryImage);
   router.post('/:id/purchase-ticket', ticketLimiter, eventController.purchaseTicket); // No auth required
 
-
-  router.get('/public',ticketLimiter,ticketLimiter, eventController.getPublicEvents); // Public endpoint for all users
-router.get('/', authController.protect,ticketLimiter, eventController.getEvents);
-router.get('/:id', authController.protect,ticketLimiter, eventController.getEventById); // Protected endpoint
+// routes/event.js
+router.get('/ping',pingLimiter, eventController.ping);
+  router.get('/public',eventController.getPublicEvents);
+router.get('/public/slug/:eventName', eventController.getEventByName);
+router.get('/', authController.protect, eventController.getEvents);
+router.get('/:id', authController.protect, eventController.getEventById); // Protected endpoint
 router.put('/:id', authController.protect, eventController.updateEvent); // Protected endpoint
 router.post('/:id/ticket-policy', authController.protect, eventController.setTicketPolicy);
-router.post('/:id/tickets', authController.protect,ticketLimiter, eventController.addTicket);
-router.put('/:id/tickets/:ticketId', authController.protect,ticketLimiter, eventController.editTicket);
-router.get('/:id/getTickets', authController.protect,ticketLimiter, eventController.getEventTickets);
-router.delete('/:id/tickets/:ticketId', authController.protect,ticketLimiter, eventController.deleteTicket);
+router.post('/:id/tickets', authController.protect, eventController.addTicket);
+router.put('/:id/tickets/:ticketId', authController.protect, eventController.editTicket);
+router.get('/:id/getTickets', authController.protect, eventController.getEventTickets);
+router.delete('/:id/tickets/:ticketId', authController.protect, eventController.deleteTicket);
 
-router.post("/:id/check-in-ticket",ticketLimiter, eventController.checkInTicket);
+router.post("/:id/check-in-ticket", eventController.checkInTicket);
 // routes/eventRouter.js
-router.post('/:id/search-ticket', authController.protect,ticketLimiter, eventController.searchTicket);
+router.post('/:id/search-ticket', authController.protect, eventController.searchTicket);
 // routes/eventRouter.js
-router.get('/:id/checkins', authController.protect,ticketLimiter, eventController.getCheckins);
+router.get('/:id/checkins', authController.protect, eventController.getCheckins);
 router.delete('/:id', eventController.deleteEvent,ticketLimiter,);
 // routes/eventRouter.js
 router.get('/:id/ticket-buyers', authController.protect, eventController.getTicketBuyers);
@@ -54,6 +62,8 @@ router
   router
   .route('/delete-gallery-image')
   .delete(authController.protect, eventController.deleteGalleryImage)
+
+  // router.post('/withdraw', authController.protect, ticketLimiter, eventController.requestWithdrawal);
 
   
 module.exports = router;

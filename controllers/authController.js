@@ -1,4 +1,6 @@
 const Host = require('../models/host');
+const Event = require('../models/event');
+const Ticket = require('../models/ticket');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
@@ -497,48 +499,6 @@ if (!host) {
 };
 
 
-// Authentication Middleware
-exports.protect = async (req, res, next) => {
-  try {
-    // 1) Getting token and check if it's there
-    let token;
-    if (
-      req.headers.authorization &&
-      req.headers.authorization.startsWith('Bearer')
-    ) {
-      token = req.headers.authorization.split(' ')[1];
-    }
-
-    if (!token) {
-      return res.status(401).json({
-        status: 'fail',
-        message: 'You are not logged in! Please log in to get access'
-      });
-    }
-
-    // 2) Verification token
-    const decoded = await jwt.verify(token, process.env.JWT_SECRET);
-
-    // 3) Check if user still exists
-    const currentHost = await Host.findById(decoded.id);
-    if (!currentHost) {
-      return res.status(401).json({
-        status: 'fail',
-        message: 'The user belonging to this token no longer exists'
-      });
-    }
-
-    // 4) Grant access to protected route
-    req.user = currentHost;
-    next();
-  } catch (err) {
-    console.error('Authentication error:', err);
-    res.status(401).json({
-      status: 'fail',
-      message: 'Invalid token. Please log in again'
-    });
-  }
-};
 
 
 exports.forgotPassword = async (req, res) => {
@@ -1046,6 +1006,95 @@ Business Hours: Mon-Fri 9AM-6PM (WAT)
     res.status(500).json({
       status: 'error',
       message: 'An unexpected error occurred. Please try again later.'
+    });
+  }
+};
+
+// Authentication Middleware
+exports.protect = async (req, res, next) => {
+  try {
+    let token;
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+    }
+
+    if (!token) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'No authentication token provided',
+      });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (err) {
+      console.error('JWT verification error:', err.message);
+      return res.status(401).json({
+        status: 'fail',
+        message: 'Invalid or expired token',
+      });
+    }
+
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'The user belonging to this token no longer exists',
+      });
+    }
+
+    req.user = host;
+    next();
+  } catch (error) {
+    console.error('Auth middleware error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Authentication error',
+    });
+  }
+};
+
+exports.refreshToken = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'No token provided',
+      });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true });
+    } catch (err) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'Invalid token',
+      });
+    }
+
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(401).json({
+        status: 'fail',
+        message: 'User no longer exists',
+      });
+    }
+
+    const newToken = jwt.sign({ id: host._id }, process.env.JWT_SECRET, {
+      expiresIn: '7d',
+    });
+
+    res.status(200).json({
+      status: 'success',
+      token: newToken,
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to refresh token',
     });
   }
 };
