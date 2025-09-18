@@ -4,6 +4,8 @@ const cors = require('cors');
 const connectDB = require('./config/db');
 
 const app = express();
+app.set('trust proxy', 1); // Trust the first proxy (Render's load balancer)
+
 
 // ======================
 // 1. Middleware Setup

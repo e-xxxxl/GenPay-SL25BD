@@ -1556,6 +1556,7 @@ exports.getPublicEvents = async (req, res) => {
 
 
 // Purchase ticket
+// Purchase ticket
 exports.purchaseTicket = async (req, res) => {
   try {
     const { eventId, tickets, reference, fees } = req.body; // Add fees to request body
@@ -1659,7 +1660,7 @@ exports.purchaseTicket = async (req, res) => {
 
       // Generate QR codes and create ticket records
       for (let i = 0; i < quantity; i++) {
-        const ticketUUID = uuidv4();
+        const ticketUUID = ticketId; // Use the original ticketId from event.tickets
         const qrCodeData = JSON.stringify({
           eventId: eventId,
           eventName: event.eventName,
@@ -1679,7 +1680,7 @@ exports.purchaseTicket = async (req, res) => {
             const uploadStream = cloudinary.uploader.upload_stream(
               {
                 folder: 'genpay/tickets',
-                public_id: `ticket_${ticketUUID}`,
+                public_id: `ticket_${ticketUUID}_${i}`, // Add index to avoid conflicts for multiple purchases
                 resource_type: 'image',
               },
               (error, result) => {
@@ -1698,7 +1699,7 @@ exports.purchaseTicket = async (req, res) => {
           price: price,
           quantity: 1,
           buyer: user._id,
-          ticketId: ticketUUID,
+          ticketId: ticketUUID, // Use the original ticketId
           qrCode: qrCodeUrl,
         });
 
@@ -1723,6 +1724,7 @@ exports.purchaseTicket = async (req, res) => {
           buyerName: `${user.firstName} ${user.lastName}`,
           eventName: event.eventName,
           venue: event.eventLocation.venue,
+          groupSize: eventTicket.groupSize || null, // Add groupSize to ticket data
         });
       }
     }
@@ -1814,6 +1816,7 @@ exports.purchaseTicket = async (req, res) => {
               <strong>Ticket Type:</strong> ${t.type}<br>
               <strong>Ticket ID:</strong> ${t.ticketId}<br>
               <strong>Price:</strong> ₦${t.price.toLocaleString('en-NG')}<br>
+              ${t.groupSize ? `<strong>Group Size:</strong> ${t.groupSize} people<br>` : ''} <!-- Show group size if it exists -->
               <strong>Buyer:</strong> ${t.buyerName}<br>
               <strong>Event:</strong> ${t.eventName}<br>
               <strong>Venue:</strong> ${t.venue}<br>
@@ -1893,7 +1896,6 @@ exports.purchaseTicket = async (req, res) => {
   }
 };
 // Search ticket
-// controllers/eventController.js
 exports.searchTicket = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(" ")[1];
@@ -1907,14 +1909,14 @@ exports.searchTicket = async (req, res) => {
       return res.status(404).json({ status: "fail", message: "Host not found" });
     }
 
-    const { id } = req.params;
+    const { id } = req.params; // eventId
     const { search } = req.body;
     if (!search) {
       return res.status(400).json({ status: "fail", message: "Search query is required" });
     }
 
     console.log("Searching for:", search, "in event:", id);
-    const event = await Event.findById(id).select("host");
+    const event = await Event.findById(id).select("host tickets");
     if (!event) {
       return res.status(404).json({ status: "fail", message: "Event not found" });
     }
@@ -1957,21 +1959,27 @@ exports.searchTicket = async (req, res) => {
       return res.status(404).json({ status: "fail", message: "No tickets found for the provided email or ticket ID" });
     }
 
-    const formattedTickets = tickets.map((ticket) => ({
-      id: ticket.ticketId || ticket._id.toString(),
-      event: {
-        id: ticket.event._id.toString(),
-        eventName: ticket.event.eventName,
-      },
-      buyer: {
-        email: ticket.buyer.email,
-        firstName: ticket.buyer.firstName,
-        lastName: ticket.buyer.lastName,
-      },
-      type: ticket.type,
-      usedAt: ticket.usedAt,
-      status: ticket.isUsed ? "used" : "valid",
-    }));
+    // Fetch groupSize from the original event ticket definition
+    const formattedTickets = tickets.map((ticket) => {
+      const originalTicket = event.tickets.find(t => t.id === ticket.ticketId);
+      const groupSize = originalTicket && originalTicket.ticketType === 'Group' ? originalTicket.groupSize : null;
+      return {
+        id: ticket.ticketId || ticket._id.toString(),
+        event: {
+          id: ticket.event._id.toString(),
+          eventName: ticket.event.eventName,
+        },
+        buyer: {
+          email: ticket.buyer.email,
+          firstName: ticket.buyer.firstName,
+          lastName: ticket.buyer.lastName,
+        },
+        type: ticket.type,
+        usedAt: ticket.usedAt,
+        status: ticket.isUsed ? "used" : "valid",
+        groupSize: groupSize, // Include groupSize only for Group tickets
+      };
+    });
 
     res.status(200).json({
       status: "success",
@@ -1986,8 +1994,7 @@ exports.searchTicket = async (req, res) => {
       error: error.message,
     });
   }
-};  
-
+};
 // Check-in ticket
 // controllers/eventController.js
 exports.checkInTicket = async (req, res) => {
