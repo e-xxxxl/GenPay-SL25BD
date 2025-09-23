@@ -55,6 +55,13 @@ app.use('/api/events', eventRoutes);
 const payoutRoutes = require('./routes/payoutRoutes');
 app.use('/api/payouts', payoutRoutes);
 
+const adminRoutes = require('./routes/adminRoutes');
+app.use('/api/admin', adminRoutes);
+
+// Initialize admin users (run once)
+const { createAdminUsers } = require('./controllers/adminAuthController');
+createAdminUsers();
+
 const ticketRouter = require('./routes/ticketRouter');
 
 // ... (other middleware)
