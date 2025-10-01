@@ -1660,7 +1660,7 @@ exports.purchaseTicket = async (req, res) => {
 
       // Generate QR codes and create ticket records
       for (let i = 0; i < quantity; i++) {
-        const ticketUUID = ticketId; // Use the original ticketId from event.tickets
+        const ticketUUID = uuidv4(); // Generate unique ID for each ticketx
         const qrCodeData = JSON.stringify({
           eventId: eventId,
           eventName: event.eventName,
