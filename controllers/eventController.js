@@ -17,7 +17,6 @@ const nodemailer = require('nodemailer');
 // Zoho Mail Transporter Configuration
 const transporter = nodemailer.createTransport({
   service: 'gmail',
-  secure: true,
   auth: {
     user: process.env.ZOHO_EMAIL,
     pass: process.env.ZOHO_APP_PASSWORD,
