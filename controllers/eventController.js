@@ -15,7 +15,7 @@ const QRCode = require('qrcode');
 const nodemailer = require('nodemailer');
 
 // Zoho Mail Transporter Configuration with better timeout settings
-const transporter = nodemailer.createTransporter({
+const transporter = nodemailer.createTransport({
   host: 'smtp.zoho.com',
   port: 465,
   secure: true,
