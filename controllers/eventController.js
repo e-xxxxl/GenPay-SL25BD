@@ -14,16 +14,38 @@ const Transaction = require('../models/transaction');
 const QRCode = require('qrcode');
 const nodemailer = require('nodemailer');
 
-// Zoho Mail Transporter Configuration
-const transporter = nodemailer.createTransport({
+// Zoho Mail Transporter Configuration with better timeout settings
+const transporter = nodemailer.createTransporter({
   host: 'smtp.zoho.com',
-  port: 465, // SSL port
+  port: 465,
   secure: true,
   auth: {
     user: process.env.ZOHO_EMAIL,
     pass: process.env.ZOHO_APP_PASSWORD,
-  }
+  },
+  connectionTimeout: 30000, // 30 seconds
+  socketTimeout: 30000, // 30 seconds
+  greetingTimeout: 30000, // 30 seconds
+  tls: {
+    rejectUnauthorized: false
+  },
+  pool: true, // Use connection pooling
+  maxConnections: 5,
+  maxMessages: 100
 });
+
+// Add email verification function
+const verifyTransporter = async () => {
+  try {
+    await transporter.verify();
+    console.log('SMTP connection verified successfully');
+  } catch (error) {
+    console.error('SMTP connection failed:', error);
+  }
+};
+
+// Verify on startup
+verifyTransporter();
 
 
 // Create a new event
