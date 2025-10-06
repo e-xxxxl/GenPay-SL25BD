@@ -14,38 +14,19 @@ const Transaction = require('../models/transaction');
 const QRCode = require('qrcode');
 const nodemailer = require('nodemailer');
 
-// Zoho Mail Transporter Configuration with better timeout settings
+// Zoho Mail Transporter Configuration
 const transporter = nodemailer.createTransport({
   host: 'smtp.zoho.com',
-  port: 465,
+  port: 465, // SSL port
   secure: true,
   auth: {
     user: process.env.ZOHO_EMAIL,
     pass: process.env.ZOHO_APP_PASSWORD,
   },
-  connectionTimeout: 30000, // 30 seconds
-  socketTimeout: 30000, // 30 seconds
-  greetingTimeout: 30000, // 30 seconds
   tls: {
-    rejectUnauthorized: false
-  },
-  pool: true, // Use connection pooling
-  maxConnections: 5,
-  maxMessages: 100
-});
-
-// Add email verification function
-const verifyTransporter = async () => {
-  try {
-    await transporter.verify();
-    console.log('SMTP connection verified successfully');
-  } catch (error) {
-    console.error('SMTP connection failed:', error);
+    rejectUnauthorized: false // Only for development/testing
   }
-};
-
-// Verify on startup
-verifyTransporter();
+});
 
 
 // Create a new event
@@ -1575,7 +1556,6 @@ exports.getPublicEvents = async (req, res) => {
 
 
 // Purchase ticket
-// Purchase ticket
 exports.purchaseTicket = async (req, res) => {
   try {
     const { eventId, tickets, reference, fees } = req.body; // Add fees to request body
@@ -1679,7 +1659,7 @@ exports.purchaseTicket = async (req, res) => {
 
       // Generate QR codes and create ticket records
       for (let i = 0; i < quantity; i++) {
-        const ticketUUID = uuidv4(); // Generate unique ID for each ticketx
+        const ticketUUID = uuidv4();
         const qrCodeData = JSON.stringify({
           eventId: eventId,
           eventName: event.eventName,
@@ -1699,7 +1679,7 @@ exports.purchaseTicket = async (req, res) => {
             const uploadStream = cloudinary.uploader.upload_stream(
               {
                 folder: 'genpay/tickets',
-                public_id: `ticket_${ticketUUID}_${i}`, // Add index to avoid conflicts for multiple purchases
+                public_id: `ticket_${ticketUUID}_${i}`,
                 resource_type: 'image',
               },
               (error, result) => {
@@ -1718,7 +1698,7 @@ exports.purchaseTicket = async (req, res) => {
           price: price,
           quantity: 1,
           buyer: user._id,
-          ticketId: ticketUUID, // Use the original ticketId
+          ticketId: ticketUUID,
           qrCode: qrCodeUrl,
         });
 
@@ -1743,7 +1723,7 @@ exports.purchaseTicket = async (req, res) => {
           buyerName: `${user.firstName} ${user.lastName}`,
           eventName: event.eventName,
           venue: event.eventLocation.venue,
-          groupSize: eventTicket.groupSize || null, // Add groupSize to ticket data
+          groupSize: eventTicket.groupSize || null,
         });
       }
     }
@@ -1766,7 +1746,7 @@ exports.purchaseTicket = async (req, res) => {
     console.log('Updating host balance for host ID:', event.host, 'with amount:', subtotal);
     const hostUpdate = await Host.findByIdAndUpdate(
       event.host,
-      { $inc: { availableBalance: subtotal } }, // Only ticket amount (excl. fees) goes to host
+      { $inc: { availableBalance: subtotal } },
       { new: true, runValidators: true }
     );
     if (!hostUpdate) {
@@ -1812,64 +1792,6 @@ exports.purchaseTicket = async (req, res) => {
       timeZone: 'Africa/Lagos',
     });
 
-    // Send emails to each unique email address
-    for (const [email, { customer, tickets }] of Object.entries(emailTicketsMap)) {
-      const mailOptions = {
-        from: `"Genpay Events" <${process.env.ZOHO_EMAIL}>`,
-        to: email,
-        subject: `Ticket Confirmation for ${event.eventName}`,
-        html: `
-          <h1>Ticket Confirmation</h1>
-          <p>Dear ${customer.firstName} ${customer.lastName},</p>
-          <p>Thank you for purchasing tickets for <strong>${event.eventName}</strong>!</p>
-          <h2>Event Details</h2>
-          <p><strong>Event:</strong> ${event.eventName}</p>
-          <p><strong>Date:</strong> ${formattedDate}</p>
-          <p><strong>Time:</strong> ${formattedStartTime} - ${formattedEndTime}</p>
-          <p><strong>Venue:</strong> ${event.eventLocation.venue}</p>
-          <h2>Ticket Details</h2>
-          ${tickets
-            .map(
-              (t) => `
-            <p>
-              <strong>Ticket Type:</strong> ${t.type}<br>
-              <strong>Ticket ID:</strong> ${t.ticketId}<br>
-              <strong>Price:</strong> ₦${t.price.toLocaleString('en-NG')}<br>
-              ${t.groupSize ? `<strong>Group Size:</strong> ${t.groupSize} people<br>` : ''} <!-- Show group size if it exists -->
-              <strong>Buyer:</strong> ${t.buyerName}<br>
-              <strong>Event:</strong> ${t.eventName}<br>
-              <strong>Venue:</strong> ${t.venue}<br>
-              <strong>Date:</strong> ${formattedDate}<br>
-              <strong>Time:</strong> ${formattedStartTime} - ${formattedEndTime}<br>
-              <img src="${t.qrCode}" alt="QR Code" style="width: 150px; height: 150px; margin-top: 10px;">
-            </p>
-          `
-            )
-            .join('')}
-          <h2>Transaction Details</h2>
-          <p><strong>Reference:</strong> ${reference || 'N/A'}</p>
-          <p><strong>Subtotal:</strong> ₦${subtotal.toLocaleString('en-NG')}</p>
-          <p><strong>Fees:</strong> ₦${fees.toLocaleString('en-NG')}</p>
-          <p><strong>Total Amount:</strong> ₦${totalAmount.toLocaleString('en-NG')}</p>
-          <p>Please present the QR code(s) at the event for entry. Save this email or download the QR codes.</p>
-          <p>If you have any questions, contact us at <a href="mailto:${process.env.ZOHO_EMAIL}">${process.env.ZOHO_EMAIL}</a>.</p>
-          <p>Enjoy the event!</p>
-          <p>Best regards,<br>The Genpay Events Team</p>
-        `,
-        attachments: tickets.map((t, index) => ({
-          filename: `ticket_${t.ticketId}.png`,
-          path: t.qrCode,
-          cid: `qrcode${index}`,
-        })),
-      };
-
-      try {
-        await transporter.sendMail(mailOptions);
-      } catch (emailError) {
-        console.error(`Failed to send confirmation email to ${email}:`, emailError);
-      }
-    }
-
     // Populate buyer details for response
     const populatedTickets = await Ticket.find({ _id: { $in: createdTickets.map(t => t._id) } })
       .populate('buyer', 'firstName lastName email');
@@ -1888,6 +1810,130 @@ exports.purchaseTicket = async (req, res) => {
       date: formattedDate,
       time: `${formattedStartTime} - ${formattedEndTime}`,
     }));
+
+    // Send emails to each unique email address using Resend
+    const { Resend } = require('resend');
+    const resend = new Resend(process.env.RESEND_API_KEY);
+    const emailErrors = [];
+    for (const [email, { customer, tickets: emailTickets }] of Object.entries(emailTicketsMap)) {
+      const attachments = emailTickets.map((t, index) => ({
+        filename: `ticket_${t.ticketId}.png`,
+        path: t.qrCode,
+        cid: `qrcode${index}`,
+      }));
+
+      try {
+        const data = await resend.emails.send({
+          from: process.env.RESEND_FROM_EMAIL, // e.g., noreply@yourdomain.com
+          to: [email],
+          subject: `Your Tickets for ${event.eventName}`,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
+              <h2 style="color: #1a73e8;">Ticket Confirmation</h2>
+              <p style="font-size: 16px;">Dear ${customer.firstName} ${customer.lastName},</p>
+              <p style="font-size: 16px;">Thank you for your purchase! You're all set for <strong>${event.eventName}</strong>. Below are your event and ticket details.</p>
+
+              <h3 style="color: #333; margin-top: 20px;">Event Details</h3>
+              <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Event</td>
+                  <td style="padding: 8px;">${event.eventName}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Date</td>
+                  <td style="padding: 8px;">${formattedDate}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Time</td>
+                  <td style="padding: 8px;">${formattedStartTime} - ${formattedEndTime}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Venue</td>
+                  <td style="padding: 8px;">${event.eventLocation.venue}</td>
+                </tr>
+              </table>
+
+              <h3 style="color: #333; margin-top: 20px;">Your Tickets</h3>
+              ${emailTickets
+                .map(
+                  (t, index) => `
+                <div style="margin-bottom: 20px; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
+                  <p style="font-size: 14px; margin: 5px 0;">
+                    <strong>Ticket Type:</strong> ${t.type}<br>
+                    <strong>Ticket ID:</strong> ${t.ticketId}<br>
+                    <strong>Price:</strong> ₦${t.price.toLocaleString('en-NG')}<br>
+                    ${t.groupSize ? `<strong>Group Size:</strong> ${t.groupSize} people<br>` : ''}
+                  </p>
+                  <img src="cid:qrcode${index}" alt="QR Code" style="width: 150px; height: 150px; margin-top: 10px; display: block;">
+                </div>
+              `
+                )
+                .join('')}
+
+              <h3 style="color: #333; margin-top: 20px;">Transaction Details</h3>
+              <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Reference</td>
+                  <td style="padding: 8px;">${reference || 'N/A'}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Subtotal</td>
+                  <td style="padding: 8px;">₦${subtotal.toLocaleString('en-NG')}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Fees</td>
+                  <td style="padding: 8px;">₦${fees.toLocaleString('en-NG')}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Total</td>
+                  <td style="padding: 8px;">₦${totalAmount.toLocaleString('en-NG')}</td>
+                </tr>
+              </table>
+
+              <p style="font-size: 14px; margin-top: 20px;">
+                Please present the QR code(s) above at the event for entry. Save this email or download the QR codes.
+              </p>
+              <p style="font-size: 14px;">
+                Questions? Contact us at <a href="mailto:${process.env.RESEND_FROM_EMAIL}" style="color: #1a73e8; text-decoration: none;">${process.env.RESEND_FROM_EMAIL}</a>.
+              </p>
+              <p style="font-size: 14px; color: #555; margin-top: 20px; text-align: center;">
+                We look forward to seeing you at the event!<br>
+                The Genpay Events Team
+              </p>
+            </div>
+          `,
+          attachments: attachments,
+        });
+
+        // Log success with email ID if available
+        console.log(`Email sent to ${email} via Resend (ID: ${data?.data?.id || 'Unknown'})`);
+      } catch (emailError) {
+        console.error(`Failed to send confirmation email to ${email}:`, emailError);
+        emailErrors.push({ email, error: emailError.message });
+      }
+    }
+
+    // Handle partial email failures
+    if (emailErrors.length > 0) {
+      console.log('Email errors:', emailErrors);
+      return res.status(207).json({
+        status: 'partial_success',
+        message: 'Tickets purchased, but some emails failed to send',
+        data: {
+          tickets: responseTickets,
+          transaction: {
+            _id: transaction._id.toString(),
+            reference: transaction.reference,
+            amount: transaction.amount,
+            fees: transaction.fees,
+            total: transaction.total,
+            paymentProvider: transaction.paymentProvider,
+            createdAt: transaction.createdAt,
+          },
+          emailErrors,
+        },
+      });
+    }
 
     res.status(201).json({
       status: 'success',
