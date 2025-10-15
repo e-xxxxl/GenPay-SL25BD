@@ -461,6 +461,7 @@ exports.requestWithdrawal = async (req, res) => {
     const host = req.user;
     const { amount } = req.body;
 
+    // Validate input
     if (!Number.isFinite(amount) || amount < 150) {
       return res.status(400).json({
         status: 'fail',
@@ -469,7 +470,13 @@ exports.requestWithdrawal = async (req, res) => {
     }
 
     // Check payout info
-    if (!host.payoutInfo || !host.payoutInfo.bankName || !host.payoutInfo.bankCode || !host.payoutInfo.accountNumber || !host.payoutInfo.accountName) {
+    if (
+      !host.payoutInfo ||
+      !host.payoutInfo.bankName ||
+      !host.payoutInfo.bankCode ||
+      !host.payoutInfo.accountNumber ||
+      !host.payoutInfo.accountName
+    ) {
       return res.status(400).json({
         status: 'fail',
         message: 'Payout information is missing. Please update your bank details in the account settings.',
@@ -506,38 +513,85 @@ exports.requestWithdrawal = async (req, res) => {
       status: 'pending',
     });
 
-    // Send email notification
+    // Send email notification using Resend
+    const { Resend } = require('resend');
+    const resend = new Resend(process.env.RESEND_API_KEY);
     console.log('Sending email to:', host.email);
-    const mailOptions = {
-      from: process.env.ZOHO_EMAIL,
-      to: host.email,
-      subject: 'Withdrawal Request Submitted',
-      html: `
-        <h2>Withdrawal Request Confirmation</h2>
-        <p>Dear ${host.displayName},</p>
-        <p>Your withdrawal request has been submitted successfully.</p>
-        <ul>
-          <li><strong>Amount:</strong> ${amount} NGN</li>
-          <li><strong>Fee:</strong> 150 NGN</li>
-          <li><strong>Net Amount:</strong> ${amount - 150} NGN</li>
-          <li><strong>Bank:</strong> ${host.payoutInfo.bankName}</li>
-          <li><strong>Account Number:</strong> ${host.payoutInfo.accountNumber}</li>
-          <li><strong>Account Name:</strong> ${host.payoutInfo.accountName}</li>
-          <li><strong>Status:</strong> Pending</li>
-        </ul>
-        <p>Processing takes 2-3 business days. You'll receive another email once the withdrawal is completed.</p>
-        <p>Thank you,<br>Genpay Team</p>
-      `,
-    };
 
-    await transporter.sendMail(mailOptions);
-    console.log('Email sent successfully');
+    try {
+      const data = await resend.emails.send({
+        from: process.env.RESEND_FROM_EMAIL, // e.g., noreply@yourdomain.com
+        to: [host.email],
+        subject: 'Your Withdrawal Request',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
+            <h2 style="color: #1a73e8;">Withdrawal Request Confirmation</h2>
+            <p style="font-size: 16px;">Dear ${host.displayName},</p>
+            <p style="font-size: 16px;">Your withdrawal request has been submitted successfully. Below are the details:</p>
 
-    res.status(201).json({
-      status: 'success',
-      data: { payout, balance: availableBalance },
-      message: 'Withdrawal request submitted successfully. You will be notified via email once processed.',
-    });
+            <h3 style="color: #333; margin-top: 20px;">Withdrawal Details</h3>
+            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+              <tr>
+                <td style="padding: 8px; font-weight: bold;">Amount</td>
+                <td style="padding: 8px;">₦${amount.toLocaleString('en-NG')}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; font-weight: bold;">Fee</td>
+                <td style="padding: 8px;">₦150</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; font-weight: bold;">Net Amount</td>
+                <td style="padding: 8px;">₦${(amount - 150).toLocaleString('en-NG')}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; font-weight: bold;">Bank</td>
+                <td style="padding: 8px;">${host.payoutInfo.bankName}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; font-weight: bold;">Account Number</td>
+                <td style="padding: 8px;">${host.payoutInfo.accountNumber}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; font-weight: bold;">Account Name</td>
+                <td style="padding: 8px;">${host.payoutInfo.accountName}</td>
+              </tr>
+              <tr>
+                <td style="padding: 8px; font-weight: bold;">Status</td>
+                <td style="padding: 8px;">Pending</td>
+              </tr>
+            </table>
+
+            <p style="font-size: 14px; margin-top: 20px;">
+              Processing takes 2-3 business days. You'll receive another email once the withdrawal is completed.
+            </p>
+            <p style="font-size: 14px;">
+              Questions? Contact us at <a href="mailto:${process.env.RESEND_FROM_EMAIL}" style="color: #1a73e8; text-decoration: none;">${process.env.RESEND_FROM_EMAIL}</a>.
+            </p>
+            <p style="font-size: 14px; color: #555; margin-top: 20px; text-align: center;">
+              Thank you,<br>The Genpay Events Team
+            </p>
+          </div>
+        `,
+      });
+
+      console.log(`Email sent to ${host.email} via Resend (ID: ${data?.data?.id || 'Unknown'})`);
+      res.status(201).json({
+        status: 'success',
+        data: { payout, balance: availableBalance },
+        message: 'Withdrawal request submitted successfully. You will be notified via email once processed.',
+      });
+    } catch (emailError) {
+      console.error(`Failed to send confirmation email to ${host.email}:`, emailError);
+      res.status(207).json({
+        status: 'partial_success',
+        message: 'Withdrawal request submitted, but email notification failed to send',
+        data: {
+          payout,
+          balance: availableBalance,
+          emailError: emailError.message,
+        },
+      });
+    }
   } catch (error) {
     console.error('Error requesting withdrawal:', error);
     res.status(500).json({
@@ -547,11 +601,12 @@ exports.requestWithdrawal = async (req, res) => {
     });
   }
 };
-
 // Update payout status (admin only)
 exports.updatePayoutStatus = async (req, res) => {
   try {
     const { payoutId, status } = req.body;
+
+    // Validate input
     if (!payoutId || !['pending', 'approved', 'rejected', 'completed'].includes(status)) {
       return res.status(400).json({
         status: 'fail',
@@ -608,36 +663,90 @@ exports.updatePayoutStatus = async (req, res) => {
     // Send email notification if completed
     if (status === 'completed') {
       const host = await Host.findById(payout.host).select('email displayName');
-      const mailOptions = {
-        from: process.env.ZOHO_EMAIL,
-        to: host.email,
-        subject: 'Withdrawal Request Completed',
-        html: `
-          <h2>Withdrawal Request Completed</h2>
-          <p>Dear ${host.displayName},</p>
-          <p>Your withdrawal request has been successfully processed.</p>
-          <ul>
-            <li><strong>Amount:</strong> ${payout.amount} NGN</li>
-            <li><strong>Fee:</strong> ${payout.fee} NGN</li>
-            <li><strong>Net Amount:</strong> ${payout.netAmount} NGN</li>
-            <li><strong>Bank:</strong> ${payout.bankDetails.bankName}</li>
-            <li><strong>Account Number:</strong> ${payout.bankDetails.accountNumber}</li>
-            <li><strong>Account Name:</strong> ${payout.bankDetails.accountName}</li>
-            <li><strong>Status:</strong> Completed</li>
-          </ul>
-          <p>Thank you,<br>Genpay Team</p>
-        `,
-      };
+      const { Resend } = require('resend');
+      const resend = new Resend(process.env.RESEND_API_KEY);
       console.log('Sending completion email to:', host.email);
-      await transporter.sendMail(mailOptions);
-      console.log('Completion email sent successfully');
-    }
 
-    res.status(200).json({
-      status: 'success',
-      data: { payout },
-      message: 'Payout status updated successfully',
-    });
+      try {
+        const data = await resend.emails.send({
+          from: process.env.RESEND_FROM_EMAIL, // e.g., noreply@yourdomain.com
+          to: [host.email],
+          subject: 'Your Withdrawal Has Been Processed',
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
+              <h2 style="color: #1a73e8;">Withdrawal Processed</h2>
+              <p style="font-size: 16px;">Dear ${host.displayName},</p>
+              <p style="font-size: 16px;">Great news! Your withdrawal request has been successfully processed.</p>
+
+              <h3 style="color: #333; margin-top: 20px;">Withdrawal Details</h3>
+              <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Amount</td>
+                  <td style="padding: 8px;">₦${payout.amount.toLocaleString('en-NG')}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Fee</td>
+                  <td style="padding: 8px;">₦${payout.fee.toLocaleString('en-NG')}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Net Amount</td>
+                  <td style="padding: 8px;">₦${payout.netAmount.toLocaleString('en-NG')}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Bank</td>
+                  <td style="padding: 8px;">${payout.bankDetails.bankName}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Account Number</td>
+                  <td style="padding: 8px;">${payout.bankDetails.accountNumber}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Account Name</td>
+                  <td style="padding: 8px;">${payout.bankDetails.accountName}</td>
+                </tr>
+                <tr>
+                  <td style="padding: 8px; font-weight: bold;">Status</td>
+                  <td style="padding: 8px;">Completed</td>
+                </tr>
+              </table>
+
+              <p style="font-size: 14px; margin-top: 20px;">
+                The funds have been transferred to your account. Please allow 1-2 business days for the transaction to reflect.
+              </p>
+              <p style="font-size: 14px;">
+                Questions? Contact us at <a href="mailto:${process.env.RESEND_FROM_EMAIL}" style="color: #1a73e8; text-decoration: none;">${process.env.RESEND_FROM_EMAIL}</a>.
+              </p>
+              <p style="font-size: 14px; color: #555; margin-top: 20px; text-align: center;">
+                Thank you,<br>The Genpay Events Team
+              </p>
+            </div>
+          `,
+        });
+
+        console.log(`Completion email sent to ${host.email} via Resend (ID: ${data?.data?.id || 'Unknown'})`);
+        res.status(200).json({
+          status: 'success',
+          data: { payout },
+          message: 'Payout status updated successfully',
+        });
+      } catch (emailError) {
+        console.error(`Failed to send completion email to ${host.email}:`, emailError);
+        res.status(207).json({
+          status: 'partial_success',
+          message: 'Payout status updated, but email notification failed to send',
+          data: {
+            payout,
+            emailError: emailError.message,
+          },
+        });
+      }
+    } else {
+      res.status(200).json({
+        status: 'success',
+        data: { payout },
+        message: 'Payout status updated successfully',
+      });
+    }
   } catch (error) {
     console.error('Error updating payout status:', error);
     res.status(500).json({
@@ -647,7 +756,6 @@ exports.updatePayoutStatus = async (req, res) => {
     });
   }
 };
-
 // Admin: Get all hosts' balances and withdrawals
 exports.getAllHostBalances = async (req, res) => {
   try {
