@@ -58,6 +58,9 @@ app.use('/api/payouts', payoutRoutes);
 const adminRoutes = require('./routes/adminRoutes');
 app.use('/api/admin', adminRoutes);
 
+const pingRoutes = require('./routes/pingRoutes');
+app.use('/api/ping', pingRoutes);
+
 // Initialize admin users (run once)
 const { createAdminUsers } = require('./controllers/adminAuthController');
 createAdminUsers();

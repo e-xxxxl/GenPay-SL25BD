@@ -34,7 +34,7 @@ router
   router.post('/:id/purchase-ticket', ticketLimiter, eventController.purchaseTicket); // No auth required
 
 // routes/event.js
-router.get('/ping',pingLimiter, eventController.ping);
+
   router.get('/public',eventController.getPublicEvents);
 router.get('/public/slug/:eventName', eventController.getEventByName);
 router.get('/', authController.protect, eventController.getEvents);
