@@ -35,7 +35,7 @@ const transactionSchema = new mongoose.Schema({
   },
   paymentProvider: {
     type: String,
-    enum: ['paystack', 'other'], // Add other providers as needed
+    enum: ['paystack', 'free'], // Add other providers as needed
     required: [true, 'Transaction must specify a payment provider'],
   },
   status: {
