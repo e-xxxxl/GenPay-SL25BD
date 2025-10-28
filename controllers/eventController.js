@@ -2275,21 +2275,25 @@ exports.purchaseTicket = async (req, res) => {
               </table>
 
               <h3 style="color: #333; margin-top: 20px;">Your Tickets</h3>
-              ${emailTickets
-                .map(
-                  (t, index) => `
-                <div style="margin-bottom: 20px; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
-                  <p style="font-size: 14px; margin: 5px 0;">
-                    <strong>Ticket Type:</strong> ${t.type}<br>
-                    <strong>Ticket ID:</strong> ${t.ticketId}<br>
-                    <strong>Price:</strong> ${formatPrice(t.price)}<br>
-                    ${t.groupSize ? `<strong>Group Size:</strong> ${t.groupSize} people<br>` : ''}
-                  </p>
-                  <img src="cid:qrcode${index}" alt="QR Code" style="width: 150px; height: 150px; margin-top: 10px; display: block;">
-                </div>
-              `
-                )
-                .join('')}
+             ${emailTickets
+  .map(
+    (t, index) => `
+    <div style="margin-bottom: 20px; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
+      <p style="font-size: 14px; margin: 5px 0;">
+        <strong>Ticket Type:</strong> ${t.type}<br>
+        <strong>Ticket ID:</strong> ${t.ticketId}<br>
+        <strong>Price:</strong> ${formatPrice(t.price)}<br>
+        <strong>Attendee Type:</strong> ${
+          t.groupSize && !t.groupSize.toString().toLowerCase().includes('unlimited')
+            ? `Group of ${t.groupSize} people`
+            : 'Individual'
+        }<br>
+      </p>
+      <img src="cid:qrcode${index}" alt="QR Code" style="width: 150px; height: 150px; margin-top: 10px; display: block;">
+    </div>
+  `
+  )
+  .join('')}
 
               <h3 style="color: #333; margin-top: 20px;">Transaction Details</h3>
               <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
