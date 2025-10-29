@@ -14,7 +14,8 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
   process.env.SECOND_FRONTEND_URL,
   'http://localhost:5173',
-  'https://genpaysl.vercel.app' // Add other dev URLs as needed
+  'https://genpaysl.vercel.app', // Add other dev URLs as needed
+  'https://genpay.ng' // Add other dev URLs as needed
 ].filter(Boolean);
 
 app.use(cors({
