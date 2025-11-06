@@ -38,6 +38,7 @@ const eventSchema = new mongoose.Schema(
         'Health & Wellness',
         'Education',
         'Entertainment',
+        'Religious',
         'Networking',
         'Other',
       ],
