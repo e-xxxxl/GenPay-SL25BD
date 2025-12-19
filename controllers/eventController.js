@@ -13,6 +13,7 @@ const Payout = require('../models/payout');
 const Transaction = require('../models/transaction');
 const QRCode = require('qrcode');
 const nodemailer = require('nodemailer');
+const { Parser } = require('json2csv'); // You'll need to install: npm install json2csv
 
 // Zoho Mail Transporter Configuration
 const transporter = nodemailer.createTransport({
@@ -2630,7 +2631,7 @@ exports.getCheckins = async (req, res) => {
   }
 };
 
-// Get ticket buyers
+// Get ticket buyers (original with groupSize fix)
 exports.getTicketBuyers = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -2656,9 +2657,10 @@ exports.getTicketBuyers = async (req, res) => {
       });
     }
 
+    // Fetch tickets with buyer info and groupSize
     const tickets = await Ticket.find({ event: req.params.id })
       .populate('buyer', 'firstName lastName email phone location')
-      .select('isUsed type price');
+      .select('isUsed type price groupSize purchaseDate'); // Added groupSize
 
     const guests = tickets.map(ticket => ({
       name: `${ticket.buyer.firstName} ${ticket.buyer.lastName}`,
@@ -2666,17 +2668,107 @@ exports.getTicketBuyers = async (req, res) => {
       phone: ticket.buyer.phone || '—',
       location: ticket.buyer.location || '—',
       checkedIn: ticket.isUsed,
+      groupSize: ticket.groupSize || 1, // Default to 1 if not specified
+      ticketType: ticket.type,
+      amountPaid: ticket.price,
+      purchaseDate: ticket.purchaseDate
     }));
 
     res.status(200).json({
       status: 'success',
-      data: { guests },
+      data: { guests, tickets }, // Now includes tickets for groupSize in frontend
     });
   } catch (error) {
     console.error('Error fetching ticket buyers:', error);
     res.status(500).json({
       status: 'error',
       message: 'Failed to fetch ticket buyers',
+      error: error.message,
+    });
+  }
+};
+
+// NEW: Export ticket buyers as CSV
+exports.exportTicketBuyersCSV = async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) {
+      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const host = await Host.findById(decoded.id);
+    if (!host) {
+      return res.status(404).json({ status: 'fail', message: 'Host not found' });
+    }
+
+    const event = await Event.findById(req.params.id).select('host eventName');
+    if (!event) {
+      return res.status(404).json({ status: 'fail', message: 'Event not found' });
+    }
+
+    if (event.host.toString() !== host._id.toString()) {
+      return res.status(403).json({
+        status: 'fail',
+        message: 'You are not authorized to export ticket buyers for this event',
+      });
+    }
+
+    // Fetch tickets with more details for CSV
+    const tickets = await Ticket.find({ event: req.params.id })
+      .populate('buyer', 'firstName lastName email phone location')
+      .populate('event', 'eventName')
+      .select('isUsed type price groupSize purchaseDate ticketId'); // Added ticketId if exists
+
+    // Format data for CSV
+    const csvData = tickets.map(ticket => ({
+      'First Name': ticket.buyer.firstName,
+      'Last Name': ticket.buyer.lastName,
+      'Email': ticket.buyer.email,
+      'Phone': ticket.buyer.phone || 'N/A',
+      'Location': ticket.buyer.location || 'N/A',
+      'Ticket ID': ticket.ticketId || ticket._id,
+      'Ticket Type': ticket.type,
+      'Group Size': ticket.groupSize || 1,
+      'Amount Paid': `N${ticket.price.toLocaleString('en-NG')}`,
+      'Checked In': ticket.isUsed ? 'Yes' : 'No',
+      'Check-in Status': ticket.isUsed ? 'Checked In' : 'Not Checked In',
+      'Purchase Date': new Date(ticket.purchaseDate).toLocaleDateString('en-GB'),
+      'Event Name': event.eventName
+    }));
+
+    // Configure CSV fields
+    const fields = [
+      'First Name',
+      'Last Name', 
+      'Email',
+      'Phone',
+      'Location',
+      'Ticket ID',
+      'Ticket Type',
+      'Group Size',
+      'Amount Paid',
+      'Checked In',
+      'Check-in Status',
+      'Purchase Date',
+      'Event Name'
+    ];
+
+    const json2csvParser = new Parser({ fields });
+    const csv = json2csvParser.parse(csvData);
+
+    // Set headers for file download
+    const filename = `${event.eventName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-guests-${Date.now()}.csv`;
+    
+    res.header('Content-Type', 'text/csv');
+    res.attachment(filename);
+    res.send(csv);
+
+  } catch (error) {
+    console.error('Error exporting CSV:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to export CSV',
       error: error.message,
     });
   }

@@ -54,6 +54,7 @@ router.get('/:id/checkins', authController.protect, eventController.getCheckins)
 router.delete('/:id', eventController.deleteEvent,ticketLimiter,);
 // routes/eventRouter.js
 router.get('/:id/ticket-buyers', authController.protect, eventController.getTicketBuyers);
+router.get('/:id/export-ticket-buyers', eventController.exportTicketBuyersCSV); // NEW
 router.get('/:id/payouts', authController.protect, eventController.getPayouts);
 
 router
