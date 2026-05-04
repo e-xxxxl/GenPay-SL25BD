@@ -14,7 +14,8 @@ const Transaction = require('../models/transaction');
 const QRCode = require('qrcode');
 const nodemailer = require('nodemailer');
 const { Parser } = require('json2csv'); // You'll need to install: npm install json2csv
-
+// Initialize Paystack transaction for redirect
+const https = require('https');
 // Zoho Mail Transporter Configuration
 const transporter = nodemailer.createTransport({
   host: 'smtp.zoho.com',
@@ -1560,7 +1561,85 @@ exports.getPublicEvents = async (req, res) => {
 //   }
 // };
 
+exports.initializePaystackTransaction = async (req, res) => {
+  try {
+    const { email, amount, eventId, tickets, fees, callbackUrl } = req.body;
+    const reference = `GENPAY_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Prepare metadata
+    const metadata = {
+      eventId,
+      tickets,
+      fees,
+      callback_url: callbackUrl || `${process.env.FRONTEND_URL}/checkout/success`
+    };
 
+    const params = JSON.stringify({
+      email,
+      amount: amount * 100, // Paystack expects amount in kobo
+      reference,
+      callback_url: metadata.callback_url,
+      metadata: metadata
+    });
+
+    const options = {
+      hostname: 'api.paystack.co',
+      port: 443,
+      path: '/transaction/initialize',
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+        'Content-Type': 'application/json'
+      }
+    };
+
+    const paystackReq = https.request(options, (paystackRes) => {
+      let data = '';
+
+      paystackRes.on('data', (chunk) => {
+        data += chunk;
+      });
+
+      paystackRes.on('end', () => {
+        const response = JSON.parse(data);
+        
+        if (response.status) {
+          res.json({
+            status: 'success',
+            data: {
+              authorization_url: response.data.authorization_url,
+              reference: response.data.reference,
+              access_code: response.data.access_code
+            }
+          });
+        } else {
+          res.status(400).json({
+            status: 'fail',
+            message: response.message || 'Failed to initialize payment'
+          });
+        }
+      });
+    });
+
+    paystackReq.on('error', (error) => {
+      console.error('Paystack initialization error:', error);
+      res.status(500).json({
+        status: 'error',
+        message: 'Payment initialization failed'
+      });
+    });
+
+    paystackReq.write(params);
+    paystackReq.end();
+
+  } catch (error) {
+    console.error('Error initializing Paystack transaction:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to initialize payment'
+    });
+  }
+};
 // Purchase ticket
 // exports.purchaseTicket = async (req, res) => {
 //   try {

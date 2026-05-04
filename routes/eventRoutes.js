@@ -34,7 +34,8 @@ router
   router.post('/:id/purchase-ticket', ticketLimiter, eventController.purchaseTicket); // No auth required
 
 // routes/event.js
-
+// In routes/event.js, add this new route
+router.post('/initialize-payment', eventController.initializePaystackTransaction);
   router.get('/public',eventController.getPublicEvents);
 router.get('/public/slug/:eventName', eventController.getEventByName);
 router.get('/', authController.protect, eventController.getEvents);
