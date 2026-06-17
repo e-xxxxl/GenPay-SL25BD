@@ -1028,7 +1028,12 @@ exports.addTicket = async (req, res) => {
       perks: ticketData.perks || [],
       transferFees: ticketData.transferFees || false,
       purchaseLimit: ticketData.purchaseLimit || null,
+       customQuestions: ticketData.customQuestions || [], // ADD THIS LINE
     };
+
+
+    console.log('Received ticket data:', JSON.stringify(req.body, null, 2));
+console.log('Custom questions:', req.body.customQuestions);
 
     event.tickets = event.tickets || [];
     event.tickets.push(newTicket);
@@ -1057,6 +1062,147 @@ exports.addTicket = async (req, res) => {
 };
 
 // Edit ticket
+// exports.editTicket = async (req, res) => {
+//   try {
+//     const token = req.headers.authorization?.split(' ')[1];
+//     if (!token) {
+//       return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
+//     }
+
+//     let decoded;
+//     try {
+//       decoded = jwt.verify(token, process.env.JWT_SECRET);
+//     } catch (err) {
+//       return res.status(401).json({ status: 'fail', message: 'Invalid or expired token' });
+//     }
+
+//     const host = await Host.findById(decoded.id);
+//     if (!host) {
+//       return res.status(404).json({ status: 'fail', message: 'Host not found' });
+//     }
+
+//     const event = await Event.findById(req.params.id).select('tickets host').populate('host', '_id');
+//     if (!event) {
+//       return res.status(404).json({ status: 'fail', message: 'Event not found' });
+//     }
+
+//     if (!event.host || !event.host._id) {
+//       return res.status(400).json({
+//         status: 'fail',
+//         message: 'Event host data is missing or invalid',
+//       });
+//     }
+
+//     if (event.host._id.toString() !== host._id.toString()) {
+//       return res.status(403).json({ status: 'fail', message: 'You are not authorized to edit tickets for this event' });
+//     }
+
+//     const ticketId = req.params.ticketId;
+//     const ticketData = req.body;
+//     const requiredFields = ['name', 'ticketType', 'quantity'];
+//     const missingFields = requiredFields.filter(field => !ticketData[field]);
+//     if (missingFields.length > 0) {
+//       return res.status(400).json({
+//         status: 'fail',
+//         message: `Missing required fields: ${missingFields.join(', ')}`,
+//       });
+//     }
+
+//     if (!['Individual', 'Group'].includes(ticketData.ticketType)) {
+//       return res.status(400).json({
+//         status: 'fail',
+//         message: 'Ticket type must be either "Individual" or "Group"',
+//       });
+//     }
+
+//     if (ticketData.ticketType === 'Individual') {
+//       if (!Number.isFinite(ticketData.perTicketPrice) || ticketData.perTicketPrice < 0) {
+//         return res.status(400).json({
+//           status: 'fail',
+//           message: 'Per ticket price is required for individual tickets and must be non-negative',
+//         });
+//       }
+//       if (!['USD', 'NGN', 'GBP', 'EUR'].includes(ticketData.perTicketCurrency)) {
+//         return res.status(400).json({
+//           status: 'fail',
+//           message: 'Invalid per ticket currency. Must be USD, NGN, GBP, or EUR',
+//         });
+//       }
+//     } else if (ticketData.ticketType === 'Group') {
+//       if (!Number.isFinite(ticketData.groupPrice) || ticketData.groupPrice < 0) {
+//         return res.status(400).json({
+//           status: 'fail',
+//           message: 'Group price is required for group tickets and must be non-negative',
+//         });
+//       }
+//       if (!['USD', 'NGN', 'GBP', 'EUR'].includes(ticketData.groupPriceCurrency)) {
+//         return res.status(400).json({
+//           status: 'fail',
+//           message: 'Invalid group price currency. Must be USD, NGN, GBP, or EUR',
+//         });
+//       }
+//       if (!ticketData.groupSize || (ticketData.groupSize !== 'Unlimited Quantity' && !Number.isFinite(Number(ticketData.groupSize)))) {
+//         return res.status(400).json({
+//           status: 'fail',
+//           message: 'Group size must be "Unlimited Quantity" or a valid number',
+//         });
+//       }
+//     }
+
+//     if (!Number.isFinite(ticketData.quantity) || ticketData.quantity < 0) {
+//       return res.status(400).json({
+//         status: 'fail',
+//         message: 'Quantity must be a non-negative number',
+//       });
+//     }
+
+//     event.tickets = event.tickets || [];
+//     const ticketIndex = event.tickets.findIndex(ticket => ticket.id === ticketId);
+//     if (ticketIndex === -1) {
+//       return res.status(404).json({ status: 'fail', message: 'Ticket not found' });
+//     }
+
+//     event.tickets[ticketIndex] = {
+//       id: ticketId,
+//       name: ticketData.name.trim(),
+//       ticketType: ticketData.ticketType,
+//       quantity: ticketData.quantity,
+//       price: ticketData.ticketType === 'Individual' ? ticketData.perTicketPrice : ticketData.groupPrice,
+//       perTicketPrice: ticketData.ticketType === 'Individual' ? ticketData.perTicketPrice : null,
+//       perTicketCurrency: ticketData.ticketType === 'Individual' ? ticketData.perTicketCurrency : null,
+//       groupPrice: ticketData.ticketType === 'Group' ? ticketData.groupPrice : null,
+//       groupPriceCurrency: ticketData.ticketType === 'Group' ? ticketData.groupPriceCurrency : null,
+//       groupSize: ticketData.groupSize || 'Unlimited Quantity',
+//       ticketDescription: ticketData.ticketDescription?.trim() || null,
+//       perks: ticketData.perks || [],
+//       transferFees: ticketData.transferFees || false,
+//       purchaseLimit: ticketData.purchaseLimit || null,
+//     };
+
+//     await event.save({ validateBeforeSave: true });
+
+//     res.status(200).json({
+//       status: 'success',
+//       data: { ticket: event.tickets[ticketIndex] },
+//       message: 'Ticket updated successfully',
+//     });
+//   } catch (error) {
+//     console.error('Error editing ticket:', error);
+//     if (error.name === 'ValidationError') {
+//       const errors = Object.values(error.errors).map((el) => ({
+//         field: el.path,
+//         message: el.message,
+//       }));
+//       return res.status(400).json({ status: 'fail', message: 'Validation failed', errors });
+//     }
+//     res.status(500).json({
+//       status: 'error',
+//       message: 'Failed to edit ticket',
+//       error: error.message,
+//     });
+//   }
+// };
+
 exports.editTicket = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -1151,6 +1297,31 @@ exports.editTicket = async (req, res) => {
       });
     }
 
+    // Validate custom questions
+    if (ticketData.customQuestions && Array.isArray(ticketData.customQuestions)) {
+      if (ticketData.customQuestions.length > 5) {
+        return res.status(400).json({
+          status: 'fail',
+          message: 'Maximum of 5 custom questions allowed',
+        });
+      }
+      // Validate each question
+      for (const question of ticketData.customQuestions) {
+        if (typeof question !== 'string' || !question.trim()) {
+          return res.status(400).json({
+            status: 'fail',
+            message: 'Each custom question must be a non-empty string',
+          });
+        }
+        if (question.length > 200) {
+          return res.status(400).json({
+            status: 'fail',
+            message: 'Each custom question must be less than 200 characters',
+          });
+        }
+      }
+    }
+
     event.tickets = event.tickets || [];
     const ticketIndex = event.tickets.findIndex(ticket => ticket.id === ticketId);
     if (ticketIndex === -1) {
@@ -1172,6 +1343,7 @@ exports.editTicket = async (req, res) => {
       perks: ticketData.perks || [],
       transferFees: ticketData.transferFees || false,
       purchaseLimit: ticketData.purchaseLimit || null,
+      customQuestions: ticketData.customQuestions || [], // ADD THIS LINE
     };
 
     await event.save({ validateBeforeSave: true });
@@ -1197,7 +1369,6 @@ exports.editTicket = async (req, res) => {
     });
   }
 };
-
 // Delete ticket
 exports.deleteTicket = async (req, res) => {
   try {
@@ -2084,7 +2255,7 @@ exports.purchaseTicket = async (req, res) => {
     const emailTicketsMap = {};
 
     for (const ticketPurchase of tickets) {
-      const { ticketId, customer, quantity = 1 } = ticketPurchase;
+      const { ticketId, customer, quantity = 1, customAnswers = {}  } = ticketPurchase;
       if (!ticketId || !customer?.email || !customer.firstName || !customer.lastName) {
         console.error('Invalid ticket purchase:', { ticketId, customer });
         return res.status(400).json({
@@ -2147,6 +2318,18 @@ exports.purchaseTicket = async (req, res) => {
         });
       }
 
+       // Save custom answers to user if they exist
+  if (customAnswers && Object.keys(customAnswers).length > 0) {
+    user.customAnswers = user.customAnswers || [];
+    user.customAnswers.push({
+      eventId: eventId,
+      ticketId: ticketId,
+      answers: customAnswers,
+      purchaseDate: new Date()
+    });
+    await user.save({ validateBeforeSave: false });
+  }
+
       // Generate QR codes and create ticket records
       for (let i = 0; i < quantity; i++) {
         const ticketUUID = uuidv4();
@@ -2190,6 +2373,7 @@ exports.purchaseTicket = async (req, res) => {
           buyer: user._id,
           ticketId: ticketUUID,
           qrCode: qrCodeUrl,
+            customAnswers: customAnswers, // ADD THIS LINE  
         });
 
         createdTickets.push(newTicket);
@@ -2710,7 +2894,7 @@ exports.getCheckins = async (req, res) => {
   }
 };
 
-// Get ticket buyers (original with groupSize fix)
+// Get ticket buyers (updated with customAnswers)
 exports.getTicketBuyers = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
@@ -2724,7 +2908,7 @@ exports.getTicketBuyers = async (req, res) => {
       return res.status(404).json({ status: 'fail', message: 'Host not found' });
     }
 
-    const event = await Event.findById(req.params.id).select('host');
+    const event = await Event.findById(req.params.id).select('host tickets');
     if (!event) {
       return res.status(404).json({ status: 'fail', message: 'Event not found' });
     }
@@ -2736,26 +2920,58 @@ exports.getTicketBuyers = async (req, res) => {
       });
     }
 
-    // Fetch tickets with buyer info and groupSize
+    // Fetch tickets with buyer info, customAnswers, and groupSize
     const tickets = await Ticket.find({ event: req.params.id })
       .populate('buyer', 'firstName lastName email phone location')
-      .select('isUsed type price groupSize purchaseDate'); // Added groupSize
+      .select('isUsed type price groupSize purchaseDate customAnswers ticketId usedAt')
+      .lean(); // Use .lean() to get plain JavaScript objects
 
-    const guests = tickets.map(ticket => ({
-      name: `${ticket.buyer.firstName} ${ticket.buyer.lastName}`,
-      email: ticket.buyer.email,
-      phone: ticket.buyer.phone || '—',
-      location: ticket.buyer.location || '—',
-      checkedIn: ticket.isUsed,
-      groupSize: ticket.groupSize || 1, // Default to 1 if not specified
-      ticketType: ticket.type,
-      amountPaid: ticket.price,
-      purchaseDate: ticket.purchaseDate
-    }));
+    const guests = tickets.map(ticket => {
+      // Get custom questions from the event ticket definition
+      const eventTicket = event.tickets.find(t => t.id === ticket.ticketId);
+      const customQuestions = eventTicket?.customQuestions || [];
+      
+      // Convert customAnswers to plain object if it's a Map
+      let customAnswers = {};
+      if (ticket.customAnswers) {
+        if (ticket.customAnswers instanceof Map) {
+          // Convert Map to plain object
+          ticket.customAnswers.forEach((value, key) => {
+            customAnswers[key] = value;
+          });
+        } else if (typeof ticket.customAnswers === 'object') {
+          customAnswers = { ...ticket.customAnswers };
+        }
+      }
+      
+      // Map custom answers with their questions
+      const customAnswersWithQuestions = {};
+      Object.keys(customAnswers).forEach(key => {
+        const questionIndex = parseInt(key);
+        const question = customQuestions[questionIndex] || `Question ${questionIndex + 1}`;
+        customAnswersWithQuestions[question] = customAnswers[key] || '';
+      });
+
+      return {
+        _id: ticket._id.toString(),
+        ticketId: ticket.ticketId,
+        name: `${ticket.buyer.firstName} ${ticket.buyer.lastName}`,
+        email: ticket.buyer.email,
+        phone: ticket.buyer.phone || '—',
+        location: ticket.buyer.location || '—',
+        checkedIn: ticket.isUsed,
+        groupSize: ticket.groupSize || 1,
+        ticketType: ticket.type,
+        amountPaid: ticket.price,
+        purchaseDate: ticket.purchaseDate,
+        checkinTime: ticket.usedAt || null,
+        customAnswers: customAnswersWithQuestions,
+      };
+    });
 
     res.status(200).json({
       status: 'success',
-      data: { guests, tickets }, // Now includes tickets for groupSize in frontend
+      data: { guests },
     });
   } catch (error) {
     console.error('Error fetching ticket buyers:', error);

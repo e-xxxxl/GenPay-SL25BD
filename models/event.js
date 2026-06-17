@@ -121,6 +121,7 @@ const eventSchema = new mongoose.Schema(
         perks: [{ type: String }],
         transferFees: { type: Boolean, default: false },
         id: { type: String, required: true },
+         customQuestions: [{ type: String }], // ADD THIS LINE
       },
     ],
     ticketPolicy: {

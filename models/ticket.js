@@ -48,6 +48,11 @@ const ticketSchema = new mongoose.Schema({
   usedAt: {
     type: Date,
   },
+  customAnswers: {
+    type: Map,
+    of: String,
+    default: {}
+  },
 }, { timestamps: true });
 
 module.exports = mongoose.models.Ticket || mongoose.model('Ticket', ticketSchema);

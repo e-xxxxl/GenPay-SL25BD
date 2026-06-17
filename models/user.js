@@ -30,6 +30,21 @@ const userSchema = new mongoose.Schema(
       required: [true, 'Location is required'],
       trim: true,
     },
+        customAnswers: [{
+      eventId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Event'
+      },
+      ticketId: String,
+      answers: {
+        type: Map,
+        of: String
+      },
+      purchaseDate: {
+        type: Date,
+        default: Date.now
+      }
+    }],
     createdAt: {
       type: Date,
       default: Date.now,
