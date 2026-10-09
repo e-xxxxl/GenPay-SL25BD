@@ -34,13 +34,21 @@ app.use(cors({
 }));
 
 
-app.use(express.json()); // Parse JSON bodies
+// Keep the raw body: Paystack's webhook signature is computed over the exact bytes sent.
+app.use(express.json({
+  limit: '1mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  },
+}));
 app.use(express.urlencoded({ extended: true })); // Parse URL-encoded forms
 
 // ======================
 // 2. Database Connection
 // ======================
-connectDB(); 
+connectDB();
+require('mongoose').connection.once('open', () => require('./services/reconciler').start());
+
 
 
 // 3. Routes (Example)

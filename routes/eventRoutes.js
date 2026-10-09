@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const eventController = require('../controllers/eventController');
 const authController = require('../controllers/authController');
+const paymentController = require('../controllers/paymentController');
 const rateLimit = require('express-rate-limit');
 
 
@@ -10,6 +11,23 @@ const ticketLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 50, // Limit each IP to 50 requests per window
   message: 'Too many requests from this IP, please try again later',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const checkoutLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30, // payment initialisation / free reservations per IP per window
+  message: { status: 'fail', message: 'Too many checkout attempts. Please wait a few minutes and try again.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// The success page polls this while a payment is being confirmed.
+const verifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  message: { status: 'fail', message: 'Too many requests. Please wait a moment and try again.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -31,11 +49,13 @@ router
 router
   .route('/upload-gallery')
   .post(authController.protect, ticketLimiter, eventController.uploadGalleryImage);
-  router.post('/:id/purchase-ticket', ticketLimiter, eventController.purchaseTicket); // No auth required
 
-// routes/event.js
-// In routes/event.js, add this new route
-router.post('/initialize-payment', eventController.initializePaystackTransaction);
+// Checkout (public, no login). Prices and payment status are always decided server-side.
+router.post('/initialize-payment', checkoutLimiter, paymentController.initializePayment);
+router.get('/verify-payment/:reference', verifyLimiter, paymentController.verifyPayment);
+router.post('/paystack-webhook', paymentController.paystackWebhook); // signature-verified, no IP limit
+router.post('/:id/purchase-ticket', checkoutLimiter, paymentController.purchaseTicket);
+
   router.get('/public',eventController.getPublicEvents);
 router.get('/public/slug/:eventName', eventController.getEventByName);
 router.get('/', authController.protect, eventController.getEvents);

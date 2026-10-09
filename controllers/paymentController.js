@@ -1,396 +1,201 @@
-const axios = require('axios');
-const Event = require('../models/event');
-const Host = require('../models/host');
-const User = require('../models/user');
-const Ticket = require('../models/ticket');
-const Transaction = require('../models/transaction');
-const QRCode = require('qrcode');
-const cloudinary = require('../config/cloudinary');
-const { v4: uuidv4 } = require('uuid');
+// controllers/paymentController.js
+// HTTP layer for checkout. All pricing/verification/fulfilment logic is in services/orderService.
+const crypto = require('crypto');
+const mongoose = require('mongoose');
+const orders = require('../services/orderService');
+const { ProviderError } = require('../services/paystack');
+const { allowedOrigins } = require('../config/origins');
 
-// Initialize Paystack Transaction
-exports.initializePaystackTransaction = async (req, res) => {
+const { OrderError } = orders;
+
+function callbackUrlFor(requested) {
   try {
-    const { email, amount, eventId, tickets, fees, metadata } = req.body;
+    const origin = new URL(requested).origin;
+    if (allowedOrigins.includes(origin)) return `${origin}/checkout/success`;
+  } catch {
+    // fall through to the configured frontend
+  }
+  const base = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
+  return `${base}/checkout/success`;
+}
 
-    // Validate required fields
-    if (!email || !amount || amount <= 0) {
-      return res.status(400).json({
-        status: 'fail',
-        message: 'Email and valid amount are required'
-      });
-    }
+async function loadSellableEvent(eventId) {
+  if (!mongoose.Types.ObjectId.isValid(eventId)) throw new OrderError(404, 'Event not found.');
+  const event = await orders.deps.Event.findById(eventId).select('eventName isPublished endDateTime tickets host').lean();
+  orders.assertSellable(event);
+  return event;
+}
 
-    if (!eventId) {
-      return res.status(400).json({
-        status: 'fail',
-        message: 'Event ID is required'
-      });
-    }
-
-    // Verify event exists
-    const event = await Event.findById(eventId);
-    if (!event) {
-      return res.status(404).json({
-        status: 'fail',
-        message: 'Event not found'
-      });
-    }
-
-    // Generate unique reference
-    const reference = `PAY_${eventId}_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-
-    // Prepare metadata with your custom data
-    const customMetadata = {
-      eventId,
-      tickets: JSON.stringify(tickets),
-      fees: fees || 0,
-      custom_fields: metadata?.custom_fields || [],
-      timestamp: new Date().toISOString()
-    };
-
-    // Call Paystack initialize endpoint
-    const response = await axios.post(
-      'https://api.paystack.co/transaction/initialize',
-      {
-        email,
-        amount: Math.round(amount * 100), // Convert to kobo
-        reference,
-        metadata: customMetadata,
-        callback_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/checkout/verify`
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 30000
-      }
-    );
-
-    if (response.data.status) {
-      return res.status(200).json({
-        status: 'success',
-        data: {
-          access_code: response.data.data.access_code,
-          reference: response.data.data.reference,
-          authorization_url: response.data.data.authorization_url
-        }
-      });
-    } else {
-      throw new Error(response.data.message || 'Failed to initialize transaction');
-    }
-  } catch (error) {
-    console.error('Paystack initialization error:', error.response?.data || error.message);
-    res.status(500).json({
+function sendError(res, err, fallbackMessage) {
+  if (err instanceof OrderError) {
+    return res.status(err.status).json({ status: 'fail', message: err.message, code: err.code, data: err.data });
+  }
+  if (err instanceof ProviderError) {
+    return res.status(503).json({
       status: 'error',
-      message: error.response?.data?.message || 'Failed to initialize payment. Please try again.'
+      message: 'Our payment provider is temporarily unreachable. If you were charged, your tickets will still be issued automatically; otherwise please try again shortly.',
     });
   }
-};
+  console.error(fallbackMessage, err);
+  return res.status(500).json({ status: 'error', message: fallbackMessage });
+}
 
-// Verify Paystack Transaction
-exports.verifyPaystackTransaction = async (req, res) => {
-  try {
-    const { reference } = req.params;
-
-    if (!reference) {
-      return res.status(400).json({
+// Translates a settlement outcome into an HTTP response.
+async function respondWithSettlement(res, settlement, reference, successStatus = 200) {
+  switch (settlement.state) {
+    case 'completed':
+      return res.status(successStatus).json({ status: 'success', data: settlement.result });
+    case 'pending':
+    case 'processing':
+      return res.status(202).json({
+        status: settlement.state,
+        message: 'We have not received confirmation of this payment yet.',
+        data: { reference },
+      });
+    case 'failed':
+      return res.status(402).json({ status: 'fail', code: 'payment_failed', message: 'This payment was not successful. You have not been charged for tickets.' });
+    case 'mismatch':
+      return res.status(409).json({
         status: 'fail',
-        message: 'Transaction reference is required'
+        code: 'payment_mismatch',
+        message: `We could not match this payment to your order. Please contact support and quote reference ${reference}.`,
       });
-    }
-
-    const response = await axios.get(
-      `https://api.paystack.co/transaction/verify/${reference}`,
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`
-        },
-        timeout: 30000
-      }
-    );
-
-    if (response.data.status && response.data.data.status === 'success') {
-      // Transaction is successful
-      const { metadata, amount, reference: txRef } = response.data.data;
-      
-      // Process the ticket purchase using the stored metadata
-      const eventId = metadata.eventId;
-      const tickets = JSON.parse(metadata.tickets || '[]');
-      const fees = parseFloat(metadata.fees || 0);
-      
-      // Call your existing purchaseTicket logic
-      const purchaseResult = await processSuccessfulPayment({
-        eventId,
-        tickets,
-        reference: txRef,
-        fees,
-        amount: amount / 100 // Convert back from kobo
-      });
-      
-      return res.status(200).json({
-        status: 'success',
-        data: {
-          transaction: response.data.data,
-          purchase: purchaseResult
-        }
-      });
-    } else {
-      return res.status(400).json({
+    case 'unfulfillable':
+      return res.status(409).json({
         status: 'fail',
-        message: response.data.message || 'Transaction verification failed'
+        code: 'sold_out_after_payment',
+        message: `Your payment was received, but the tickets sold out before your order could be confirmed. Please contact support and quote reference ${reference} for a refund.`,
       });
-    }
-  } catch (error) {
-    console.error('Verification error:', error.response?.data || error.message);
-    res.status(500).json({
-      status: 'error',
-      message: error.response?.data?.message || 'Failed to verify transaction'
-    });
-  }
-};
-
-// Helper function to process successful payment
-async function processSuccessfulPayment({ eventId, tickets, reference, fees, amount }) {
-  try {
-    // Find event
-    const event = await Event.findById(eventId).select(
-      'eventName startDateTime endDateTime eventLocation tickets host'
-    );
-    
-    if (!event) {
-      throw new Error('Event not found');
-    }
-
-    if (!event.host) {
-      throw new Error('Event has no associated host');
-    }
-
-    // Validate tickets and calculate subtotal
-    let subtotal = 0;
-    const createdTickets = [];
-    const emailTicketsMap = {};
-
-    for (const ticketPurchase of tickets) {
-      const { ticketId, customer, quantity = 1 } = ticketPurchase;
-      
-      const eventTicket = event.tickets.find((t) => t.id === ticketId);
-      if (!eventTicket) {
-        throw new Error(`Ticket with ID ${ticketId} not found in event`);
-      }
-
-      const price = Number(eventTicket.price);
-      if (!Number.isFinite(price) || price < 0) {
-        throw new Error(`Invalid price for ticket ID ${ticketId}`);
-      }
-
-      if (!Number.isInteger(eventTicket.quantity) || eventTicket.quantity < quantity) {
-        throw new Error(`Not enough ${eventTicket.name} tickets available`);
-      }
-
-      const ticketAmount = price * quantity;
-      subtotal += ticketAmount;
-
-      // Update ticket quantity
-      eventTicket.quantity -= quantity;
-
-      // Find or create User for this attendee
-      let user = await User.findOne({ email: customer.email });
-      if (!user) {
-        user = await User.create({
-          firstName: customer.firstName,
-          lastName: customer.lastName,
-          email: customer.email,
-          phone: customer.phone || '',
-          location: customer.location || '',
-        });
-      }
-
-      // Generate QR codes and create ticket records
-      for (let i = 0; i < quantity; i++) {
-        const ticketUUID = uuidv4();
-        const qrCodeData = JSON.stringify({
-          eventId: eventId,
-          eventName: event.eventName,
-          ticketId: ticketUUID,
-          ticketName: eventTicket.name,
-          ticketType: eventTicket.ticketType,
-          price: price,
-          buyerName: `${user.firstName} ${user.lastName}`,
-          buyerEmail: user.email,
-          startDateTime: event.startDateTime,
-          venue: event.eventLocation.venue,
-        });
-
-        const qrCodeUrl = await new Promise((resolve, reject) => {
-          QRCode.toBuffer(qrCodeData, { errorCorrectionLevel: 'H' }, (err, buffer) => {
-            if (err) return reject(err);
-            const uploadStream = cloudinary.uploader.upload_stream(
-              {
-                folder: 'genpay/tickets',
-                public_id: `ticket_${ticketUUID}_${i}`,
-                resource_type: 'image',
-              },
-              (error, result) => {
-                if (error) return reject(error);
-                resolve(result.secure_url);
-              }
-            );
-            require('stream').Readable.from(buffer).pipe(uploadStream);
-          });
-        });
-
-        const newTicket = await Ticket.create({
-          event: eventId,
-          name: eventTicket.name,
-          type: eventTicket.ticketType,
-          price: price,
-          quantity: 1,
-          buyer: user._id,
-          ticketId: ticketUUID,
-          qrCode: qrCodeUrl,
-        });
-
-        createdTickets.push(newTicket);
-
-        // Group tickets by email for sending emails
-        if (!emailTicketsMap[customer.email]) {
-          emailTicketsMap[customer.email] = {
-            customer: {
-              firstName: customer.firstName,
-              lastName: customer.lastName,
-              email: customer.email,
-            },
-            tickets: [],
-          };
-        }
-        emailTicketsMap[customer.email].tickets.push({
-          type: newTicket.name.toUpperCase(),
-          price: newTicket.price,
-          qrCode: newTicket.qrCode,
-          ticketId: newTicket.ticketId,
-          buyerName: `${user.firstName} ${user.lastName}`,
-          eventName: event.eventName,
-          venue: event.eventLocation.venue,
-          groupSize: eventTicket.groupSize || null,
-        });
-      }
-    }
-
-    // Save updated event
-    await event.save({ validateBeforeSave: true });
-
-    // Update host balance
-    console.log('Updating host balance for host ID:', event.host, 'with amount:', subtotal);
-    const hostUpdate = await Host.findByIdAndUpdate(
-      event.host,
-      { $inc: { availableBalance: subtotal } },
-      { new: true, runValidators: true }
-    );
-    
-    if (!hostUpdate) {
-      console.error('Host not found for ID:', event.host);
-    }
-
-    // Create transaction record
-    const totalAmount = subtotal + fees;
-    const transaction = await Transaction.create({
-      event: eventId,
-      tickets: createdTickets.map((t) => t._id),
-      reference,
-      amount: subtotal,
-      fees,
-      total: totalAmount,
-      paymentProvider: 'paystack',
-      status: 'completed',
-    });
-
-    // Format response tickets
-    const populatedTickets = await Ticket.find({ _id: { $in: createdTickets.map(t => t._id) } })
-      .populate('buyer', 'firstName lastName email');
-
-    const responseTickets = populatedTickets.map((ticket) => ({
-      _id: ticket._id.toString(),
-      type: ticket.name,
-      price: ticket.price,
-      qrCode: ticket.qrCode,
-      ticketId: ticket.ticketId,
-      buyerName: ticket.buyer ? `${ticket.buyer.firstName} ${ticket.buyer.lastName}` : 'Unknown',
-      buyerEmail: ticket.buyer ? ticket.buyer.email : 'Unknown',
-      eventName: event.eventName,
-      venue: event.eventLocation.venue,
-    }));
-
-    // Send emails (simplified - you can keep your existing email logic)
-    console.log(`Tickets created successfully. Sending confirmation emails...`);
-
-    return {
-      tickets: responseTickets,
-      transaction: {
-        _id: transaction._id.toString(),
-        reference: transaction.reference,
-        amount: transaction.amount,
-        fees: transaction.fees,
-        total: transaction.total,
-        paymentProvider: transaction.paymentProvider,
-        createdAt: transaction.createdAt,
-      }
-    };
-  } catch (error) {
-    console.error('Error processing payment:', error);
-    throw error;
+    case 'not_found':
+      return res.status(404).json({ status: 'fail', message: 'We could not find a payment with this reference.' });
+    default:
+      return res.status(503).json({ status: 'error', message: 'We are still confirming your payment. Please check again in a moment; do not pay twice.' });
   }
 }
 
-// Webhook endpoint for Paystack to send charge.success events
-exports.paystackWebhook = async (req, res) => {
+// POST /api/events/initialize-payment
+exports.initializePayment = async (req, res) => {
   try {
-    // Verify webhook signature
-    const signature = req.headers['x-paystack-signature'];
-    const secret = process.env.PAYSTACK_SECRET_KEY;
-    
-    const crypto = require('crypto');
-    const hash = crypto
-      .createHmac('sha512', secret)
-      .update(JSON.stringify(req.body))
-      .digest('hex');
-    
-    if (hash !== signature) {
-      return res.status(401).json({ status: 'error', message: 'Invalid signature' });
+    const { eventId, tickets, expectedTotal, callbackUrl } = req.body || {};
+    const event = await loadSellableEvent(eventId);
+    const cart = orders.buildCart(event, tickets);
+
+    if (cart.total <= 0) {
+      throw new OrderError(400, 'This order is free and does not need a payment.', 'free_order');
+    }
+    if (expectedTotal !== undefined && Number(expectedTotal) !== cart.total) {
+      throw new OrderError(409, 'The price of your order has changed. Please review it and try again.', 'price_changed', {
+        subtotal: cart.subtotal,
+        fees: cart.fees,
+        total: cart.total,
+      });
     }
 
-    const event = req.body;
-    
-    // Handle charge.success event
-    if (event.event === 'charge.success') {
-      const { reference, metadata, amount } = event.data;
-      
-      // Check if transaction already processed
-      const existingTransaction = await Transaction.findOne({ reference });
-      if (existingTransaction) {
-        return res.status(200).json({ status: 'success', message: 'Transaction already processed' });
-      }
-      
-      // Process the ticket purchase
-      const eventId = metadata.eventId;
-      const tickets = JSON.parse(metadata.tickets || '[]');
-      const fees = parseFloat(metadata.fees || 0);
-      
-      await processSuccessfulPayment({
-        eventId,
-        tickets,
-        reference,
-        fees,
-        amount: amount / 100
+    const email = cart.lines[0].customer.email;
+    const order = await orders.createOrder(event, cart, { provider: 'paystack', email });
+    try {
+      const init = await orders.deps.paystack.initializeTransaction({
+        email,
+        amountKobo: cart.amountKobo,
+        reference: order.reference,
+        callbackUrl: callbackUrlFor(callbackUrl),
+        metadata: { orderId: String(order._id), eventId: String(event._id) },
       });
-      
-      console.log(`Webhook processed successfully for reference: ${reference}`);
+      return res.status(200).json({
+        status: 'success',
+        data: {
+          authorization_url: init.authorization_url,
+          access_code: init.access_code,
+          reference: order.reference,
+          subtotal: cart.subtotal,
+          fees: cart.fees,
+          total: cart.total,
+        },
+      });
+    } catch (err) {
+      await orders.deps.Order.updateOne({ _id: order._id }, { $set: { status: 'failed', failureReason: 'initialize_failed' } });
+      throw err;
     }
-    
-    res.status(200).json({ status: 'success' });
-  } catch (error) {
-    console.error('Webhook error:', error);
-    res.status(500).json({ status: 'error', message: error.message });
+  } catch (err) {
+    if (err instanceof ProviderError) {
+      return res.status(502).json({ status: 'error', message: 'We could not start your payment. Please try again.' });
+    }
+    return sendError(res, err, 'Failed to initialize payment.');
+  }
+};
+
+// GET /api/events/verify-payment/:reference
+exports.verifyPayment = async (req, res) => {
+  try {
+    const reference = String(req.params.reference || '').slice(0, 100);
+    if (!reference) return res.status(400).json({ status: 'fail', message: 'Payment reference is required.' });
+    const settlement = await orders.settleOrder(reference);
+    return await respondWithSettlement(res, settlement, reference);
+  } catch (err) {
+    return sendError(res, err, 'Failed to verify payment.');
+  }
+};
+
+// POST /api/events/:id/purchase-ticket
+// Two uses, both safe against forged input:
+//  * with a payment `reference`: idempotently settle that order (kept for existing clients);
+//  * without one: reserve tickets for a FREE order. The price is computed here, so an order
+//    that costs money is rejected no matter what the client claims.
+exports.purchaseTicket = async (req, res) => {
+  try {
+    const { tickets, reference } = req.body || {};
+    // Old clients labelled free reservations with a client-made "FREE_" reference.
+    if (typeof reference === 'string' && reference && !/^FREE_/.test(reference)) {
+      const settlement = await orders.settleOrder(reference.slice(0, 100));
+      return await respondWithSettlement(res, settlement, reference, 200);
+    }
+
+    const event = await loadSellableEvent(req.params.id);
+    const cart = orders.buildCart(event, tickets);
+    if (cart.total > 0) {
+      throw new OrderError(402, 'Payment is required for this order.', 'payment_required');
+    }
+    const order = await orders.createOrder(event, cart, { provider: 'free', email: cart.lines[0].customer.email });
+    const settlement = await orders.settleOrder(order.reference);
+    return await respondWithSettlement(res, settlement, order.reference, 201);
+  } catch (err) {
+    return sendError(res, err, 'Failed to reserve tickets.');
+  }
+};
+
+function signatureMatches(rawBody, signature) {
+  const secret = process.env.PAYSTACK_SECRET_KEY;
+  if (!secret || !rawBody || typeof signature !== 'string') return false;
+  const expected = crypto.createHmac('sha512', secret).update(rawBody).digest();
+  let given;
+  try {
+    given = Buffer.from(signature, 'hex');
+  } catch {
+    return false;
+  }
+  return given.length === expected.length && crypto.timingSafeEqual(given, expected);
+}
+exports.signatureMatches = signatureMatches;
+
+// POST /api/events/paystack-webhook  (configure this URL in the Paystack dashboard)
+exports.paystackWebhook = async (req, res) => {
+  if (!signatureMatches(req.rawBody, req.headers['x-paystack-signature'])) {
+    return res.status(401).json({ status: 'error', message: 'Invalid signature' });
+  }
+  const event = req.body || {};
+  if (event.event !== 'charge.success') return res.status(200).json({ status: 'ignored' });
+
+  const reference = event.data?.reference;
+  if (typeof reference !== 'string' || !reference) return res.status(200).json({ status: 'ignored' });
+
+  try {
+    // The webhook payload is only a trigger: the order is re-verified against Paystack's API.
+    const settlement = await orders.settleOrder(reference);
+    // Ask Paystack to redeliver only when we may still be able to succeed later.
+    const retryable = ['error', 'pending'].includes(settlement.state);
+    return res.status(retryable ? 500 : 200).json({ status: settlement.state });
+  } catch (err) {
+    console.error('Webhook processing error:', err.message);
+    return res.status(500).json({ status: 'error' });
   }
 };

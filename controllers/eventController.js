@@ -11,26 +11,9 @@ const User = require('../models/user');
 const Ticket = require('../models/ticket');
 const Payout = require('../models/payout');
 const Transaction = require('../models/transaction');
-const QRCode = require('qrcode');
-const nodemailer = require('nodemailer');
 const { Parser } = require('json2csv'); // You'll need to install: npm install json2csv
-// Initialize Paystack transaction for redirect
-const https = require('https');
-// Zoho Mail Transporter Configuration
-const transporter = nodemailer.createTransport({
-  host: 'smtp.zoho.com',
-  port: 465, // SSL port
-  secure: true,
-  auth: {
-    user: process.env.ZOHO_EMAIL,
-    pass: process.env.ZOHO_APP_PASSWORD,
-  },
-  tls: {
-    rejectUnauthorized: false // Only for development/testing
-  }
-});
 
-
+const { toPublicTickets, shouldShowQuantity } = require('../utils/publicEvent');
 // Create a new event
 exports.createEvent = async (req, res) => {
   try {
@@ -79,6 +62,7 @@ exports.createEvent = async (req, res) => {
       socialLinks,
       headerImage,
       images,
+      showTicketQuantity,
     } = req.body;
 
     const requiredFields = {
@@ -185,6 +169,7 @@ exports.createEvent = async (req, res) => {
       images: images || [],
       tickets: [], // Initialize tickets array
     };
+    if (typeof showTicketQuantity === 'boolean') eventData.showTicketQuantity = showTicketQuantity;
 
     const newEvent = await Event.create(eventData);
 
@@ -215,7 +200,6 @@ exports.createEvent = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'An unexpected error occurred. Please try again later.',
-      error: err.message,
     });
   }
 };
@@ -271,10 +255,18 @@ exports.getEvents = async (req, res) => {
     const events = await Event.find({ host: host._id })
       .populate('host', 'displayName userType firstName lastName organizationName')
       .select(
-        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images capacity tickets isPublished createdAt ticketPolicy'
+        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images capacity tickets isPublished showTicketQuantity createdAt ticketPolicy'
       )
       .skip(skip)
       .limit(limit);
+
+    // Attendee counts for all events in one aggregation (was one query per event).
+    const attendeeCounts = new Map(
+      (await Ticket.aggregate([
+        { $match: { event: { $in: events.map((e) => e._id) } } },
+        { $group: { _id: '$event', count: { $sum: 1 } } },
+      ])).map((row) => [String(row._id), row.count])
+    );
 
     // 3) Validate and map events
     const formattedEvents = await Promise.all(
@@ -294,7 +286,7 @@ exports.getEvents = async (req, res) => {
           url: event.eventUrl || null,
           image: event.headerImage || null,
           poster: event.headerImage || null,
-          attendees: await Ticket.countDocuments({ event: event._id }), // Await the ticket count
+          attendees: attendeeCounts.get(String(event._id)) || 0,
           socialLinks: {
             instagram: event.socialLinks?.instagram || null,
             twitter: event.socialLinks?.twitter || null,
@@ -311,6 +303,7 @@ exports.getEvents = async (req, res) => {
             organizationName: event.host.organizationName || null,
           },
           isPublished: event.isPublished,
+          showTicketQuantity: event.showTicketQuantity !== false,
           createdAt: event.createdAt,
           ticketPolicy: {
             refundPolicy: event.ticketPolicy?.refundPolicy || null,
@@ -343,7 +336,6 @@ exports.getEvents = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to fetch events',
-      error: error.message,
     });
   }
 };
@@ -444,7 +436,6 @@ exports.setTicketPolicy = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to set ticket policy',
-      error: error.message,
     });
   }
 };
@@ -595,7 +586,6 @@ exports.uploadEventImage = async (req, res) => {
       res.status(500).json({
         status: 'error',
         message: 'An unexpected error occurred. Please try again later.',
-        error: error.message,
       });
     }
   });
@@ -748,7 +738,6 @@ exports.uploadGalleryImage = async (req, res) => {
       res.status(500).json({
         status: 'error',
         message: 'An unexpected error occurred. Please try again later.',
-        error: error.message,
       });
     }
   });
@@ -758,7 +747,6 @@ exports.uploadGalleryImage = async (req, res) => {
 exports.getEventById = async (req, res) => {
   try {
     const token = req.headers.authorization?.split(' ')[1];
-    console.log("Received token:", token);
     if (!token) {
       return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
     }
@@ -766,7 +754,6 @@ exports.getEventById = async (req, res) => {
     let decoded;
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
-      console.log("Decoded token:", decoded);
     } catch (err) {
       return res.status(401).json({ status: 'fail', message: 'Invalid or expired token' });
     }
@@ -789,8 +776,6 @@ exports.getEventById = async (req, res) => {
       });
     }
 
-    console.log("Event host object:", event.host, "Event host ID:", event.host._id.toString());
-    console.log("Requesting host object:", host, "Requesting host ID:", host._id.toString());
     if (event.host._id.toString() !== host._id.toString()) {
       return res.status(403).json({ status: 'fail', message: 'You are not authorized to view this event' });
     }
@@ -804,7 +789,6 @@ exports.getEventById = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to fetch event',
-      error: error.message,
     });
   }
 };
@@ -854,8 +838,11 @@ exports.updateEvent = async (req, res) => {
       startDateTime,
       endDateTime,
       socialLinks,
-      ticketTiers,
+      showTicketQuantity,
     } = req.body;
+    // NOTE: ticket tiers (and their remaining quantities) are deliberately NOT editable here.
+    // The edit form sends back the tier list it loaded earlier; writing it would overwrite stock
+    // sold in the meantime. Tiers are managed through the /tickets endpoints.
 
     if (!eventLocation || typeof eventLocation !== 'object' || !eventLocation.venue) {
       return res.status(400).json({
@@ -884,7 +871,7 @@ exports.updateEvent = async (req, res) => {
           tiktok: socialLinks?.tiktok?.trim() || null,
           website: socialLinks?.website?.trim() || null,
         },
-        tickets: ticketTiers || event.tickets || [],
+        ...(typeof showTicketQuantity === 'boolean' ? { showTicketQuantity } : {}),
       },
       { new: true, runValidators: true }
     );
@@ -912,7 +899,6 @@ exports.updateEvent = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to update event',
-      error: error.message,
     });
   }
 };
@@ -1056,7 +1042,6 @@ console.log('Custom questions:', req.body.customQuestions);
     res.status(500).json({
       status: 'error',
       message: 'Failed to add ticket',
-      error: error.message,
     });
   }
 };
@@ -1365,7 +1350,6 @@ exports.editTicket = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to edit ticket',
-      error: error.message,
     });
   }
 };
@@ -1423,7 +1407,6 @@ exports.deleteTicket = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to delete ticket',
-      error: error.message,
     });
   }
 };
@@ -1476,7 +1459,6 @@ exports.getEventTickets = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to fetch tickets',
-      error: error.message,
     });
   }
 };
@@ -1540,7 +1522,6 @@ exports.deleteHeaderImage = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to delete header image',
-      error: error.message,
     });
   }
 };
@@ -1600,7 +1581,6 @@ exports.deleteGalleryImage = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to delete gallery image',
-      error: error.message,
     });
   }
 };
@@ -1620,9 +1600,10 @@ exports.getPublicEvents = async (req, res) => {
     })
       .sort({ startDateTime: 1 }) // Sort by startDateTime in ascending order
       .select(
-        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images tickets slug' // Added slug
+        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images tickets slug showTicketQuantity'
       )
-      .populate('host', 'displayName');
+      .populate('host', 'displayName')
+      .lean();
 
     const formattedEvents = events.map(event => ({
       _id: event._id.toString(),
@@ -1640,7 +1621,8 @@ exports.getPublicEvents = async (req, res) => {
       headerImage: event.headerImage || null,
       images: event.images || [],
       socialLinks: event.socialLinks || {},
-      tickets: event.tickets || [],
+      tickets: toPublicTickets(event),
+      showTicketQuantity: shouldShowQuantity(event),
       host: {
         displayName: event.host?.displayName || 'Unknown Host',
       },
@@ -1663,7 +1645,6 @@ exports.getPublicEvents = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to fetch public events',
-      error: error.message,
     });
   }
 };
@@ -1732,922 +1713,6 @@ exports.getPublicEvents = async (req, res) => {
 //   }
 // };
 
-exports.initializePaystackTransaction = async (req, res) => {
-  try {
-    const { email, amount, eventId, tickets, fees, callbackUrl } = req.body;
-    const reference = `GENPAY_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
-    // Prepare metadata
-    const metadata = {
-      eventId,
-      tickets,
-      fees,
-      callback_url: callbackUrl || `${process.env.FRONTEND_URL}/checkout/success`
-    };
-
-    const params = JSON.stringify({
-      email,
-      amount: amount * 100, // Paystack expects amount in kobo
-      reference,
-      callback_url: metadata.callback_url,
-      metadata: metadata
-    });
-
-    const options = {
-      hostname: 'api.paystack.co',
-      port: 443,
-      path: '/transaction/initialize',
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
-        'Content-Type': 'application/json'
-      }
-    };
-
-    const paystackReq = https.request(options, (paystackRes) => {
-      let data = '';
-
-      paystackRes.on('data', (chunk) => {
-        data += chunk;
-      });
-
-      paystackRes.on('end', () => {
-        const response = JSON.parse(data);
-        
-        if (response.status) {
-          res.json({
-            status: 'success',
-            data: {
-              authorization_url: response.data.authorization_url,
-              reference: response.data.reference,
-              access_code: response.data.access_code
-            }
-          });
-        } else {
-          res.status(400).json({
-            status: 'fail',
-            message: response.message || 'Failed to initialize payment'
-          });
-        }
-      });
-    });
-
-    paystackReq.on('error', (error) => {
-      console.error('Paystack initialization error:', error);
-      res.status(500).json({
-        status: 'error',
-        message: 'Payment initialization failed'
-      });
-    });
-
-    paystackReq.write(params);
-    paystackReq.end();
-
-  } catch (error) {
-    console.error('Error initializing Paystack transaction:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to initialize payment'
-    });
-  }
-};
-// Purchase ticket
-// exports.purchaseTicket = async (req, res) => {
-//   try {
-//     const { eventId, tickets, reference, fees } = req.body; // Add fees to request body
-
-//     // Validate input
-//     if (!eventId || !tickets || !Array.isArray(tickets) || tickets.length === 0 || typeof fees !== 'number') {
-//       return res.status(400).json({
-//         status: 'fail',
-//         message: 'Missing required fields: eventId, tickets array, or fees',
-//       });
-//     }
-
-//     console.log('Purchase ticket request body:', JSON.stringify(req.body, null, 2));
-
-//     // Find event
-//     const event = await Event.findById(eventId).select(
-//       'eventName startDateTime endDateTime eventLocation tickets host'
-//     );
-//     if (!event) {
-//       return res.status(404).json({
-//         status: 'fail',
-//         message: 'Event not found',
-//       });
-//     }
-
-//     if (!event.host) {
-//       return res.status(400).json({
-//         status: 'fail',
-//         message: 'Event has no associated host',
-//       });
-//     }
-
-//     // Validate tickets and calculate subtotal
-//     let subtotal = 0;
-//     const createdTickets = [];
-//     const emailTicketsMap = {};
-
-//     for (const ticketPurchase of tickets) {
-//       const { ticketId, customer, quantity = 1 } = ticketPurchase;
-//       if (!ticketId || !customer?.email || !customer.firstName || !customer.lastName) {
-//         console.error('Invalid ticket purchase:', { ticketId, customer });
-//         return res.status(400).json({
-//           status: 'fail',
-//           message: 'Invalid ticketId or missing customer data (email, firstName, lastName)',
-//         });
-//       }
-
-//       const eventTicket = event.tickets.find((t) => t.id === ticketId);
-//       if (!eventTicket) {
-//         return res.status(404).json({
-//           status: 'fail',
-//           message: `Ticket with ID ${ticketId} not found in event`,
-//         });
-//       }
-
-//       console.log('Event ticket:', JSON.stringify(eventTicket, null, 2));
-
-//       // Validate price and quantity
-//       const price = Number(eventTicket.price);
-//       if (!Number.isFinite(price) || price < 0) {
-//         console.error('Invalid price for ticket:', { ticketId, price: eventTicket.price });
-//         return res.status(400).json({
-//           status: 'fail',
-//           message: `Invalid price for ticket ID ${ticketId}`,
-//         });
-//       }
-
-//       if (!Number.isInteger(eventTicket.quantity) || eventTicket.quantity < quantity) {
-//         return res.status(400).json({
-//           status: 'fail',
-//           message: `Not enough ${eventTicket.name} tickets available`,
-//         });
-//       }
-
-//       // Calculate ticket amount
-//       const ticketAmount = price * quantity;
-//       console.log(`Calculating: ${price} * ${quantity} = ${ticketAmount}`);
-//       if (!Number.isFinite(ticketAmount)) {
-//         console.error('Invalid ticket amount:', { ticketId, price, quantity });
-//         return res.status(400).json({
-//           status: 'fail',
-//           message: `Invalid ticket amount for ticket ID ${ticketId}`,
-//         });
-//       }
-//       subtotal += ticketAmount;
-
-//       // Update ticket quantity
-//       eventTicket.quantity -= quantity;
-
-//       // Find or create User for this attendee
-//       let user = await User.findOne({ email: customer.email });
-//       if (!user) {
-//         user = await User.create({
-//           firstName: customer.firstName,
-//           lastName: customer.lastName,
-//           email: customer.email,
-//           phone: customer.phone || '',
-//           location: customer.location || '',
-//         });
-//       }
-
-//       // Generate QR codes and create ticket records
-//       for (let i = 0; i < quantity; i++) {
-//         const ticketUUID = uuidv4();
-//         const qrCodeData = JSON.stringify({
-//           eventId: eventId,
-//           eventName: event.eventName,
-//           ticketId: ticketUUID,
-//           ticketName: eventTicket.name,
-//           ticketType: eventTicket.ticketType,
-//           price: price,
-//           buyerName: `${user.firstName} ${user.lastName}`,
-//           buyerEmail: user.email,
-//           startDateTime: event.startDateTime,
-//           venue: event.eventLocation.venue,
-//         });
-
-//         const qrCodeUrl = await new Promise((resolve, reject) => {
-//           QRCode.toBuffer(qrCodeData, { errorCorrectionLevel: 'H' }, (err, buffer) => {
-//             if (err) return reject(err);
-//             const uploadStream = cloudinary.uploader.upload_stream(
-//               {
-//                 folder: 'genpay/tickets',
-//                 public_id: `ticket_${ticketUUID}_${i}`,
-//                 resource_type: 'image',
-//               },
-//               (error, result) => {
-//                 if (error) return reject(error);
-//                 resolve(result.secure_url);
-//               }
-//             );
-//             require('stream').Readable.from(buffer).pipe(uploadStream);
-//           });
-//         });
-
-//         const newTicket = await Ticket.create({
-//           event: eventId,
-//           name: eventTicket.name,
-//           type: eventTicket.ticketType,
-//           price: price,
-//           quantity: 1,
-//           buyer: user._id,
-//           ticketId: ticketUUID,
-//           qrCode: qrCodeUrl,
-//         });
-
-//         createdTickets.push(newTicket);
-
-//         // Group tickets by email for sending emails
-//         if (!emailTicketsMap[customer.email]) {
-//           emailTicketsMap[customer.email] = {
-//             customer: {
-//               firstName: customer.firstName,
-//               lastName: customer.lastName,
-//               email: customer.email,
-//             },
-//             tickets: [],
-//           };
-//         }
-//         emailTicketsMap[customer.email].tickets.push({
-//           type: newTicket.name.toUpperCase(),
-//           price: newTicket.price,
-//           qrCode: newTicket.qrCode,
-//           ticketId: newTicket.ticketId,
-//           buyerName: `${user.firstName} ${user.lastName}`,
-//           eventName: event.eventName,
-//           venue: event.eventLocation.venue,
-//           groupSize: eventTicket.groupSize || null,
-//         });
-//       }
-//     }
-
-//     console.log('Subtotal:', subtotal, 'Fees:', fees, 'Total:', subtotal + fees);
-
-//     // Validate total
-//     const totalAmount = subtotal + fees;
-//     if (!Number.isFinite(totalAmount) || totalAmount <= 0) {
-//       return res.status(400).json({
-//         status: 'fail',
-//         message: 'Invalid total amount calculated',
-//       });
-//     }
-
-//     // Save updated event
-//     await event.save({ validateBeforeSave: true });
-
-//     // Update host balance
-//     console.log('Updating host balance for host ID:', event.host, 'with amount:', subtotal);
-//     const hostUpdate = await Host.findByIdAndUpdate(
-//       event.host,
-//       { $inc: { availableBalance: subtotal } },
-//       { new: true, runValidators: true }
-//     );
-//     if (!hostUpdate) {
-//       console.error('Host not found for ID:', event.host);
-//       return res.status(404).json({
-//         status: 'fail',
-//         message: 'Host not found',
-//       });
-//     }
-//     console.log('Host updated:', JSON.stringify(hostUpdate, null, 2));
-
-//     // Create transaction record
-//     const transaction = await Transaction.create({
-//       event: eventId,
-//       tickets: createdTickets.map((t) => t._id),
-//       reference,
-//       amount: subtotal,
-//       fees,
-//       total: totalAmount,
-//       paymentProvider: 'paystack',
-//       status: 'completed',
-//     });
-
-//     // Format date and time
-//     const startDateTime = new Date(event.startDateTime);
-//     const endDateTime = new Date(event.endDateTime);
-//     const formattedDate = startDateTime.toLocaleDateString('en-US', {
-//       month: 'long',
-//       day: 'numeric',
-//       year: 'numeric',
-//       timeZone: 'Africa/Lagos',
-//     });
-//     const formattedStartTime = startDateTime.toLocaleTimeString('en-US', {
-//       hour: 'numeric',
-//       minute: 'numeric',
-//       hour12: true,
-//       timeZone: 'Africa/Lagos',
-//     });
-//     const formattedEndTime = endDateTime.toLocaleTimeString('en-US', {
-//       hour: 'numeric',
-//       minute: 'numeric',
-//       hour12: true,
-//       timeZone: 'Africa/Lagos',
-//     });
-
-//     // Populate buyer details for response
-//     const populatedTickets = await Ticket.find({ _id: { $in: createdTickets.map(t => t._id) } })
-//       .populate('buyer', 'firstName lastName email');
-
-//     // Format response tickets
-//     const responseTickets = populatedTickets.map((ticket) => ({
-//       _id: ticket._id.toString(),
-//       type: ticket.name,
-//       price: ticket.price,
-//       qrCode: ticket.qrCode,
-//       ticketId: ticket.ticketId,
-//       buyerName: ticket.buyer ? `${ticket.buyer.firstName} ${ticket.buyer.lastName}` : 'Unknown',
-//       buyerEmail: ticket.buyer ? ticket.buyer.email : 'Unknown',
-//       eventName: event.eventName,
-//       venue: event.eventLocation.venue,
-//       date: formattedDate,
-//       time: `${formattedStartTime} - ${formattedEndTime}`,
-//     }));
-
-//     // Send emails to each unique email address using Resend
-//     const { Resend } = require('resend');
-//     const resend = new Resend(process.env.RESEND_API_KEY);
-//     const emailErrors = [];
-//     for (const [email, { customer, tickets: emailTickets }] of Object.entries(emailTicketsMap)) {
-//       const attachments = emailTickets.map((t, index) => ({
-//         filename: `ticket_${t.ticketId}.png`,
-//         path: t.qrCode,
-//         cid: `qrcode${index}`,
-//       }));
-
-//       try {
-//         const data = await resend.emails.send({
-//           from: process.env.RESEND_FROM_EMAIL, // e.g., noreply@yourdomain.com
-//           to: [email],
-//           subject: `Your Tickets for ${event.eventName}`,
-//           html: `
-//             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
-//               <h2 style="color: #1a73e8;">Ticket Confirmation</h2>
-//               <p style="font-size: 16px;">Dear ${customer.firstName} ${customer.lastName},</p>
-//               <p style="font-size: 16px;">Thank you for your purchase! You're all set for <strong>${event.eventName}</strong>. Below are your event and ticket details.</p>
-
-//               <h3 style="color: #333; margin-top: 20px;">Event Details</h3>
-//               <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-//                 <tr>
-//                   <td style="padding: 8px; font-weight: bold;">Event</td>
-//                   <td style="padding: 8px;">${event.eventName}</td>
-//                 </tr>
-//                 <tr>
-//                   <td style="padding: 8px; font-weight: bold;">Date</td>
-//                   <td style="padding: 8px;">${formattedDate}</td>
-//                 </tr>
-//                 <tr>
-//                   <td style="padding: 8px; font-weight: bold;">Time</td>
-//                   <td style="padding: 8px;">${formattedStartTime} - ${formattedEndTime}</td>
-//                 </tr>
-//                 <tr>
-//                   <td style="padding: 8px; font-weight: bold;">Venue</td>
-//                   <td style="padding: 8px;">${event.eventLocation.venue}</td>
-//                 </tr>
-//               </table>
-
-//               <h3 style="color: #333; margin-top: 20px;">Your Tickets</h3>
-//               ${emailTickets
-//                 .map(
-//                   (t, index) => `
-//                 <div style="margin-bottom: 20px; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
-//                   <p style="font-size: 14px; margin: 5px 0;">
-//                     <strong>Ticket Type:</strong> ${t.type}<br>
-//                     <strong>Ticket ID:</strong> ${t.ticketId}<br>
-//                     <strong>Price:</strong> ₦${t.price.toLocaleString('en-NG')}<br>
-//                     ${t.groupSize ? `<strong>Group Size:</strong> ${t.groupSize} people<br>` : ''}
-//                   </p>
-//                   <img src="cid:qrcode${index}" alt="QR Code" style="width: 150px; height: 150px; margin-top: 10px; display: block;">
-//                 </div>
-//               `
-//                 )
-//                 .join('')}
-
-//               <h3 style="color: #333; margin-top: 20px;">Transaction Details</h3>
-//               <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-//                 <tr>
-//                   <td style="padding: 8px; font-weight: bold;">Reference</td>
-//                   <td style="padding: 8px;">${reference || 'N/A'}</td>
-//                 </tr>
-//                 <tr>
-//                   <td style="padding: 8px; font-weight: bold;">Subtotal</td>
-//                   <td style="padding: 8px;">₦${subtotal.toLocaleString('en-NG')}</td>
-//                 </tr>
-//                 <tr>
-//                   <td style="padding: 8px; font-weight: bold;">Fees</td>
-//                   <td style="padding: 8px;">₦${fees.toLocaleString('en-NG')}</td>
-//                 </tr>
-//                 <tr>
-//                   <td style="padding: 8px; font-weight: bold;">Total</td>
-//                   <td style="padding: 8px;">₦${totalAmount.toLocaleString('en-NG')}</td>
-//                 </tr>
-//               </table>
-
-//               <p style="font-size: 14px; margin-top: 20px;">
-//                 Please present the QR code(s) above at the event for entry. Save this email or download the QR codes.
-//               </p>
-//               <p style="font-size: 14px;">
-//                 Questions? Contact us at <a href="mailto:${process.env.RESEND_FROM_EMAIL}" style="color: #1a73e8; text-decoration: none;">${process.env.RESEND_FROM_EMAIL}</a>.
-//               </p>
-//               <p style="font-size: 14px; color: #555; margin-top: 20px; text-align: center;">
-//                 We look forward to seeing you at the event!<br>
-//                 The Genpay Events Team
-//               </p>
-//             </div>
-//           `,
-//           attachments: attachments,
-//         });
-
-//         // Log success with email ID if available
-//         console.log(`Email sent to ${email} via Resend (ID: ${data?.data?.id || 'Unknown'})`);
-//       } catch (emailError) {
-//         console.error(`Failed to send confirmation email to ${email}:`, emailError);
-//         emailErrors.push({ email, error: emailError.message });
-//       }
-//     }
-
-//     // Handle partial email failures
-//     if (emailErrors.length > 0) {
-//       console.log('Email errors:', emailErrors);
-//       return res.status(207).json({
-//         status: 'partial_success',
-//         message: 'Tickets purchased, but some emails failed to send',
-//         data: {
-//           tickets: responseTickets,
-//           transaction: {
-//             _id: transaction._id.toString(),
-//             reference: transaction.reference,
-//             amount: transaction.amount,
-//             fees: transaction.fees,
-//             total: transaction.total,
-//             paymentProvider: transaction.paymentProvider,
-//             createdAt: transaction.createdAt,
-//           },
-//           emailErrors,
-//         },
-//       });
-//     }
-
-//     res.status(201).json({
-//       status: 'success',
-//       data: {
-//         tickets: responseTickets,
-//         transaction: {
-//           _id: transaction._id.toString(),
-//           reference: transaction.reference,
-//           amount: transaction.amount,
-//           fees: transaction.fees,
-//           total: transaction.total,
-//           paymentProvider: transaction.paymentProvider,
-//           createdAt: transaction.createdAt,
-//         },
-//       },
-//       message: 'Tickets purchased successfully and confirmation emails sent',
-//     });
-//   } catch (error) {
-//     console.error('Error purchasing ticket:', error);
-//     res.status(500).json({
-//       status: 'error',
-//       message: 'Failed to purchase tickets or send confirmation emails',
-//       error: error.message,
-//     });
-//   }
-// };
-
-exports.purchaseTicket = async (req, res) => {
-  try {
-    const { eventId, tickets, reference, fees, isFree = false } = req.body;
-
-    // Validate input
-    if (!eventId || !tickets || !Array.isArray(tickets) || tickets.length === 0 || typeof fees !== 'number') {
-      return res.status(400).json({
-        status: 'fail',
-        message: 'Missing required fields: eventId, tickets array, or fees',
-      });
-    }
-
-    console.log('Purchase ticket request body:', JSON.stringify(req.body, null, 2));
-
-    // Find event
-    const event = await Event.findById(eventId).select(
-      'eventName startDateTime endDateTime eventLocation tickets host'
-    );
-    if (!event) {
-      return res.status(404).json({
-        status: 'fail',
-        message: 'Event not found',
-      });
-    }
-
-    if (!event.host) {
-      return res.status(400).json({
-        status: 'fail',
-        message: 'Event has no associated host',
-      });
-    }
-
-    // Validate tickets and calculate subtotal
-    let subtotal = 0;
-    const createdTickets = [];
-    const emailTicketsMap = {};
-
-    for (const ticketPurchase of tickets) {
-      const { ticketId, customer, quantity = 1, customAnswers = {}  } = ticketPurchase;
-      if (!ticketId || !customer?.email || !customer.firstName || !customer.lastName) {
-        console.error('Invalid ticket purchase:', { ticketId, customer });
-        return res.status(400).json({
-          status: 'fail',
-          message: 'Invalid ticketId or missing customer data (email, firstName, lastName)',
-        });
-      }
-
-      const eventTicket = event.tickets.find((t) => t.id === ticketId);
-      if (!eventTicket) {
-        return res.status(404).json({
-          status: 'fail',
-          message: `Ticket with ID ${ticketId} not found in event`,
-        });
-      }
-
-      console.log('Event ticket:', JSON.stringify(eventTicket, null, 2));
-
-      // Validate price and quantity
-      const price = Number(eventTicket.price);
-      if (!Number.isFinite(price) || price < 0) {
-        console.error('Invalid price for ticket:', { ticketId, price: eventTicket.price });
-        return res.status(400).json({
-          status: 'fail',
-          message: `Invalid price for ticket ID ${ticketId}`,
-        });
-      }
-
-      if (!Number.isInteger(eventTicket.quantity) || eventTicket.quantity < quantity) {
-        return res.status(400).json({
-          status: 'fail',
-          message: `Not enough ${eventTicket.name} tickets available`,
-        });
-      }
-
-      // Calculate ticket amount
-      const ticketAmount = price * quantity;
-      console.log(`Calculating: ${price} * ${quantity} = ${ticketAmount}`);
-      if (!Number.isFinite(ticketAmount)) {
-        console.error('Invalid ticket amount:', { ticketId, price, quantity });
-        return res.status(400).json({
-          status: 'fail',
-          message: `Invalid ticket amount for ticket ID ${ticketId}`,
-        });
-      }
-      subtotal += ticketAmount;
-
-      // Update ticket quantity
-      eventTicket.quantity -= quantity;
-
-      // Find or create User for this attendee
-      let user = await User.findOne({ email: customer.email });
-      if (!user) {
-        user = await User.create({
-          firstName: customer.firstName,
-          lastName: customer.lastName,
-          email: customer.email,
-          phone: customer.phone || '',
-          location: customer.location || '',
-        });
-      }
-
-       // Save custom answers to user if they exist
-  if (customAnswers && Object.keys(customAnswers).length > 0) {
-    user.customAnswers = user.customAnswers || [];
-    user.customAnswers.push({
-      eventId: eventId,
-      ticketId: ticketId,
-      answers: customAnswers,
-      purchaseDate: new Date()
-    });
-    await user.save({ validateBeforeSave: false });
-  }
-
-      // Generate QR codes and create ticket records
-      for (let i = 0; i < quantity; i++) {
-        const ticketUUID = uuidv4();
-        const qrCodeData = JSON.stringify({
-          eventId: eventId,
-          eventName: event.eventName,
-          ticketId: ticketUUID,
-          ticketName: eventTicket.name,
-          ticketType: eventTicket.ticketType,
-          price: price,
-          buyerName: `${user.firstName} ${user.lastName}`,
-          buyerEmail: user.email,
-          startDateTime: event.startDateTime,
-          venue: event.eventLocation.venue,
-        });
-
-        const qrCodeUrl = await new Promise((resolve, reject) => {
-          QRCode.toBuffer(qrCodeData, { errorCorrectionLevel: 'H' }, (err, buffer) => {
-            if (err) return reject(err);
-            const uploadStream = cloudinary.uploader.upload_stream(
-              {
-                folder: 'genpay/tickets',
-                public_id: `ticket_${ticketUUID}_${i}`,
-                resource_type: 'image',
-              },
-              (error, result) => {
-                if (error) return reject(error);
-                resolve(result.secure_url);
-              }
-            );
-            require('stream').Readable.from(buffer).pipe(uploadStream);
-          });
-        });
-
-        const newTicket = await Ticket.create({
-          event: eventId,
-          name: eventTicket.name,
-          type: eventTicket.ticketType,
-          price: price,
-          quantity: 1,
-          buyer: user._id,
-          ticketId: ticketUUID,
-          qrCode: qrCodeUrl,
-            customAnswers: customAnswers, // ADD THIS LINE  
-        });
-
-        createdTickets.push(newTicket);
-
-        // Group tickets by email for sending emails
-        if (!emailTicketsMap[customer.email]) {
-          emailTicketsMap[customer.email] = {
-            customer: {
-              firstName: customer.firstName,
-              lastName: customer.lastName,
-              email: customer.email,
-            },
-            tickets: [],
-          };
-        }
-        emailTicketsMap[customer.email].tickets.push({
-          type: newTicket.name.toUpperCase(),
-          price: newTicket.price,
-          qrCode: newTicket.qrCode,
-          ticketId: newTicket.ticketId,
-          buyerName: `${user.firstName} ${user.lastName}`,
-          eventName: event.eventName,
-          venue: event.eventLocation.venue,
-          groupSize: eventTicket.groupSize || null,
-        });
-      }
-    }
-
-    console.log('Subtotal:', subtotal, 'Fees:', fees, 'Total:', subtotal + fees);
-
-    // Validate total
-    const totalAmount = subtotal + fees;
-    // Allow totalAmount === 0 for free events when isFree is true
-    if (!Number.isFinite(totalAmount) || (!isFree && totalAmount <= 0)) {
-      return res.status(400).json({
-        status: 'fail',
-        message: !Number.isFinite(totalAmount)
-          ? 'Invalid total amount calculated'
-          : 'Invalid total amount for paid event',
-      });
-    }
-
-    // Save updated event
-    await event.save({ validateBeforeSave: true });
-
-    // Update host balance (only for paid events)
-    if (!isFree) {
-      console.log('Updating host balance for host ID:', event.host, 'with amount:', subtotal);
-      const hostUpdate = await Host.findByIdAndUpdate(
-        event.host,
-        { $inc: { availableBalance: subtotal } },
-        { new: true, runValidators: true }
-      );
-      if (!hostUpdate) {
-        console.error('Host not found for ID:', event.host);
-        return res.status(404).json({
-          status: 'fail',
-          message: 'Host not found',
-        });
-      }
-      console.log('Host updated:', JSON.stringify(hostUpdate, null, 2));
-    }
-
-    // Create transaction record
-    const transaction = await Transaction.create({
-      event: eventId,
-      tickets: createdTickets.map((t) => t._id),
-      reference,
-      amount: subtotal,
-      fees,
-      total: totalAmount,
-      paymentProvider: isFree ? 'free' : 'paystack',
-      status: 'completed',
-    });
-
-    // Format date and time
-    const startDateTime = new Date(event.startDateTime);
-    const endDateTime = new Date(event.endDateTime);
-    const formattedDate = startDateTime.toLocaleDateString('en-US', {
-      month: 'long',
-      day: 'numeric',
-      year: 'numeric',
-      timeZone: 'Africa/Lagos',
-    });
-    const formattedStartTime = startDateTime.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: 'numeric',
-      hour12: true,
-      timeZone: 'Africa/Lagos',
-    });
-    const formattedEndTime = endDateTime.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: 'numeric',
-      hour12: true,
-      timeZone: 'Africa/Lagos',
-    });
-
-    // Format price for email
-    const formatPrice = (n) => {
-      if (n === 0) return 'Free';
-      return `₦${Number(n).toLocaleString('en-NG')}`;
-    };
-
-    // Populate buyer details for response
-    const populatedTickets = await Ticket.find({ _id: { $in: createdTickets.map(t => t._id) } })
-      .populate('buyer', 'firstName lastName email');
-
-    // Format response tickets
-    const responseTickets = populatedTickets.map((ticket) => ({
-      _id: ticket._id.toString(),
-      type: ticket.name,
-      price: ticket.price,
-      qrCode: ticket.qrCode,
-      ticketId: ticket.ticketId,
-      buyerName: ticket.buyer ? `${ticket.buyer.firstName} ${ticket.buyer.lastName}` : 'Unknown',
-      buyerEmail: ticket.buyer ? ticket.buyer.email : 'Unknown',
-      eventName: event.eventName,
-      venue: event.eventLocation.venue,
-      date: formattedDate,
-      time: `${formattedStartTime} - ${formattedEndTime}`,
-    }));
-
-    // Send emails to each unique email address using Resend
-    const { Resend } = require('resend');
-    const resend = new Resend(process.env.RESEND_API_KEY);
-    const emailErrors = [];
-    for (const [email, { customer, tickets: emailTickets }] of Object.entries(emailTicketsMap)) {
-      const attachments = emailTickets.map((t, index) => ({
-        filename: `ticket_${t.ticketId}.png`,
-        path: t.qrCode,
-        cid: `qrcode${index}`,
-      }));
-
-      try {
-        const data = await resend.emails.send({
-          from: process.env.RESEND_FROM_EMAIL,
-          to: [email],
-          subject: `Your Tickets for ${event.eventName}`,
-          html: `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; color: #333;">
-              <h2 style="color: #1a73e8;">Ticket Confirmation</h2>
-              <p style="font-size: 16px;">Dear ${customer.firstName} ${customer.lastName},</p>
-              <p style="font-size: 16px;">Thank you for your ${isFree ? 'reservation' : 'purchase'}! You're all set for <strong>${event.eventName}</strong>. Below are your event and ticket details.</p>
-
-              <h3 style="color: #333; margin-top: 20px;">Event Details</h3>
-              <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-                <tr>
-                  <td style="padding: 8px; font-weight: bold;">Event</td>
-                  <td style="padding: 8px;">${event.eventName}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; font-weight: bold;">Date</td>
-                  <td style="padding: 8px;">${formattedDate}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; font-weight: bold;">Time</td>
-                  <td style="padding: 8px;">${formattedStartTime} - ${formattedEndTime}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; font-weight: bold;">Venue</td>
-                  <td style="padding: 8px;">${event.eventLocation.venue}</td>
-                </tr>
-              </table>
-
-              <h3 style="color: #333; margin-top: 20px;">Your Tickets</h3>
-             ${emailTickets
-  .map(
-    (t, index) => `
-    <div style="margin-bottom: 20px; padding: 10px; border: 1px solid #ddd; border-radius: 5px;">
-      <p style="font-size: 14px; margin: 5px 0;">
-        <strong>Ticket Type:</strong> ${t.type}<br>
-        <strong>Ticket ID:</strong> ${t.ticketId}<br>
-        <strong>Price:</strong> ${formatPrice(t.price)}<br>
-        <strong>Attendee Type:</strong> ${
-          t.groupSize && !t.groupSize.toString().toLowerCase().includes('unlimited')
-            ? `Group of ${t.groupSize} people`
-            : 'Individual'
-        }<br>
-      </p>
-      <img src="cid:qrcode${index}" alt="QR Code" style="width: 150px; height: 150px; margin-top: 10px; display: block;">
-    </div>
-  `
-  )
-  .join('')}
-
-              <h3 style="color: #333; margin-top: 20px;">Transaction Details</h3>
-              <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-                <tr>
-                  <td style="padding: 8px; font-weight: bold;">Reference</td>
-                  <td style="padding: 8px;">${reference || 'N/A'}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; font-weight: bold;">Subtotal</td>
-                  <td style="padding: 8px;">${formatPrice(subtotal)}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; font-weight: bold;">Fees</td>
-                  <td style="padding: 8px;">${formatPrice(fees)}</td>
-                </tr>
-                <tr>
-                  <td style="padding: 8px; font-weight: bold;">Total</td>
-                  <td style="padding: 8px;">${formatPrice(totalAmount)}</td>
-                </tr>
-              </table>
-
-              <p style="font-size: 14px; margin-top: 20px;">
-                Please present the QR code(s) above at the event for entry. Save this email or download the QR codes.
-              </p>
-              <p style="font-size: 14px;">
-                Questions? Contact us at <a href="mailto:${process.env.RESEND_FROM_EMAIL}" style="color: #1a73e8; text-decoration: none;">${process.env.RESEND_FROM_EMAIL}</a>.
-              </p>
-              <p style="font-size: 14px; color: #555; margin-top: 20px; text-align: center;">
-                We look forward to seeing you at the event!<br>
-                The Genpay Events Team
-              </p>
-            </div>
-          `,
-          attachments: attachments,
-        });
-
-        console.log(`Email sent to ${email} via Resend (ID: ${data?.data?.id || 'Unknown'})`);
-      } catch (emailError) {
-        console.error(`Failed to send confirmation email to ${email}:`, emailError);
-        emailErrors.push({ email, error: emailError.message });
-      }
-    }
-
-    // Handle partial email failures
-    if (emailErrors.length > 0) {
-      console.log('Email errors:', emailErrors);
-      return res.status(207).json({
-        status: 'partial_success',
-        message: 'Tickets reserved, but some emails failed to send',
-        data: {
-          tickets: responseTickets,
-          transaction: {
-            _id: transaction._id.toString(),
-            reference: transaction.reference,
-            amount: transaction.amount,
-            fees: transaction.fees,
-            total: transaction.total,
-            paymentProvider: transaction.paymentProvider,
-            createdAt: transaction.createdAt,
-          },
-          emailErrors,
-        },
-      });
-    }
-
-    res.status(201).json({
-      status: 'success',
-      data: {
-        tickets: responseTickets,
-        transaction: {
-          _id: transaction._id.toString(),
-          reference: transaction.reference,
-          amount: transaction.amount,
-          fees: transaction.fees,
-          total: transaction.total,
-          paymentProvider: transaction.paymentProvider,
-          createdAt: transaction.createdAt,
-        },
-      },
-      message: `Tickets ${isFree ? 'reserved' : 'purchased'} successfully and confirmation emails sent`,
-    });
-  } catch (error) {
-    console.error('Error processing tickets:', error);
-    res.status(500).json({
-      status: 'error',
-      message: `Failed to ${req.body.isFree ? 'reserve' : 'purchase'} tickets or send confirmation emails`,
-      error: error.message,
-    });
-  }
-};
 // Search ticket
 exports.searchTicket = async (req, res) => {
   try {
@@ -2744,7 +1809,6 @@ exports.searchTicket = async (req, res) => {
     res.status(500).json({
       status: "error",
       message: "Failed to search ticket",
-      error: error.message,
     });
   }
 };
@@ -2835,7 +1899,6 @@ exports.checkInTicket = async (req, res) => {
     res.status(500).json({
       status: "error",
       message: "Failed to check in ticket",
-      error: error.message,
     });
   }
 };
@@ -2889,7 +1952,6 @@ exports.getCheckins = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to fetch check-ins',
-      error: error.message,
     });
   }
 };
@@ -2923,12 +1985,12 @@ exports.getTicketBuyers = async (req, res) => {
     // Fetch tickets with buyer info, customAnswers, and groupSize
     const tickets = await Ticket.find({ event: req.params.id })
       .populate('buyer', 'firstName lastName email phone location')
-      .select('isUsed type price groupSize purchaseDate customAnswers ticketId usedAt')
+      .select('isUsed type name tierId price groupSize purchaseDate createdAt customAnswers ticketId usedAt')
       .lean(); // Use .lean() to get plain JavaScript objects
 
     const guests = tickets.map(ticket => {
       // Get custom questions from the event ticket definition
-      const eventTicket = event.tickets.find(t => t.id === ticket.ticketId);
+      const eventTicket = event.tickets.find(t => t.id === ticket.tierId) || event.tickets.find(t => t.name === ticket.name);
       const customQuestions = eventTicket?.customQuestions || [];
       
       // Convert customAnswers to plain object if it's a Map
@@ -2963,7 +2025,7 @@ exports.getTicketBuyers = async (req, res) => {
         groupSize: ticket.groupSize || 1,
         ticketType: ticket.type,
         amountPaid: ticket.price,
-        purchaseDate: ticket.purchaseDate,
+        purchaseDate: ticket.purchaseDate || ticket.createdAt,
         checkinTime: ticket.usedAt || null,
         customAnswers: customAnswersWithQuestions,
       };
@@ -2978,7 +2040,6 @@ exports.getTicketBuyers = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to fetch ticket buyers',
-      error: error.message,
     });
   }
 };
@@ -3013,7 +2074,7 @@ exports.exportTicketBuyersCSV = async (req, res) => {
     const tickets = await Ticket.find({ event: req.params.id })
       .populate('buyer', 'firstName lastName email phone location')
       .populate('event', 'eventName')
-      .select('isUsed type price groupSize purchaseDate ticketId'); // Added ticketId if exists
+      .select('isUsed type price groupSize purchaseDate createdAt ticketId');
 
     // Format data for CSV
     const csvData = tickets.map(ticket => ({
@@ -3028,7 +2089,7 @@ exports.exportTicketBuyersCSV = async (req, res) => {
       'Amount Paid': `N${ticket.price.toLocaleString('en-NG')}`,
       'Checked In': ticket.isUsed ? 'Yes' : 'No',
       'Check-in Status': ticket.isUsed ? 'Checked In' : 'Not Checked In',
-      'Purchase Date': new Date(ticket.purchaseDate).toLocaleDateString('en-GB'),
+      'Purchase Date': new Date(ticket.purchaseDate || ticket.createdAt).toLocaleDateString('en-GB'),
       'Event Name': event.eventName
     }));
 
@@ -3064,7 +2125,6 @@ exports.exportTicketBuyersCSV = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to export CSV',
-      error: error.message,
     });
   }
 };
@@ -3109,7 +2169,6 @@ exports.getPayouts = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to fetch payouts',
-      error: error.message,
     });
   }
 };
@@ -3195,7 +2254,6 @@ exports.deleteEvent = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to delete event',
-      error: error.message,
     });
   }
 };
@@ -3210,14 +2268,15 @@ exports.getEventByName = async (req, res) => {
 
     // Find the event by slug (case-insensitive)
     const event = await Event.findOne({
-      slug: { $regex: `^${eventName}$`, $options: 'i' },
+      slug: String(eventName || '').toLowerCase(), // slugs are stored lowercase; exact match, no regex
       isPublished: true,
       startDateTime: { $gte: now },
     })
       .select(
-        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images tickets slug attendeesCount'
+        'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images tickets slug attendeesCount showTicketQuantity'
       )
-      .populate('host', 'displayName');
+      .populate('host', 'displayName')
+      .lean();
 
     if (!event) {
       return res.status(404).json({
@@ -3242,9 +2301,11 @@ exports.getEventByName = async (req, res) => {
       headerImage: event.headerImage || null,
       images: Array.isArray(event.images) ? event.images : [],
       socialLinks: event.socialLinks || {},
-      tickets: Array.isArray(event.tickets) ? event.tickets : [],
+      tickets: toPublicTickets(event),
+      showTicketQuantity: shouldShowQuantity(event),
       slug: event.slug,
-      attendeesCount: event.attendeesCount || 0,
+      // The attendee count would let a visitor work out remaining stock, so it follows the same setting.
+      ...(shouldShowQuantity(event) ? { attendeesCount: event.attendeesCount || 0 } : {}),
       host: {
         displayName: event.host?.displayName || 'Unknown Host',
       },
@@ -3259,7 +2320,6 @@ exports.getEventByName = async (req, res) => {
     res.status(500).json({
       status: 'error',
       message: 'Failed to fetch event',
-      error: error.message,
     });
   }
 };

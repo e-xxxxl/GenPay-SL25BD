@@ -101,6 +101,19 @@ const eventSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Host-controlled: show the remaining ticket count on the public event page.
+    // Defaults to true so events created before this setting keep their behaviour.
+    showTicketQuantity: {
+      type: Boolean,
+      default: true,
+    },
+    // Exactly-once inventory ledger: one "<orderReference>:<ticketTierId>" entry per
+    // stock deduction. Never exposed through the API.
+    processedRefs: {
+      type: [String],
+      select: false,
+      default: undefined,
+    },
     createdAt: {
       type: Date,
       default: Date.now,
@@ -140,6 +153,9 @@ const eventSchema = new mongoose.Schema(
     toObject: { virtuals: true },
   }
 );
+
+eventSchema.index({ isPublished: 1, startDateTime: 1 });
+eventSchema.index({ host: 1, createdAt: -1 });
 
 // Virtual for remaining tickets
 eventSchema.virtual('remainingTickets').get(function () {

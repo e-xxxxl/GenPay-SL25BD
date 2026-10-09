@@ -37,6 +37,10 @@ const ticketSchema = new mongoose.Schema({
     required: true,
     unique: true,
   },
+  // id of the event ticket tier this ticket was bought from (Event.tickets[].id)
+  tierId: {
+    type: String,
+  },
   qrCode: {
     type: String,
     required: true,
@@ -54,5 +58,8 @@ const ticketSchema = new mongoose.Schema({
     default: {}
   },
 }, { timestamps: true });
+
+ticketSchema.index({ event: 1, createdAt: -1 });
+ticketSchema.index({ buyer: 1 });
 
 module.exports = mongoose.models.Ticket || mongoose.model('Ticket', ticketSchema);

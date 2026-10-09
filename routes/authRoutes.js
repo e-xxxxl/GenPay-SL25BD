@@ -27,12 +27,12 @@ router.post('/signup', authLimiter, authController.signup);
 router.get('/verify-email/:token', authLimiter, authController.verifyEmail);
 router.post('/resend-verification', authLimiter, authController.resendVerification);
 router.post('/login', loginLimiter, authController.login);
-router.post('/refresh', authController.refreshToken);
+router.post('/refresh', authLimiter, authController.refreshToken);
 router.post('/forgot-password',loginLimiter, authController.forgotPassword);
 router.post('/reset-password', loginLimiter,authController.resetPassword);
 router.get('/me', authController.protect, authController.getMe);
 router.put('/update-profile', authController.protect, authController.updateProfile);
-router.post('/send-support-message', authController.sendSupportMessage);
+router.post('/send-support-message', authLimiter, authController.sendSupportMessage);
 
 
 module.exports = router;

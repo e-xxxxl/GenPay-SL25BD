@@ -13,9 +13,6 @@ const transporter = nodemailer.createTransport({
     user: process.env.ZOHO_EMAIL,
     pass: process.env.ZOHO_APP_PASSWORD,
   },
-  tls: {
-    rejectUnauthorized: false
-  }
 });
 
 
