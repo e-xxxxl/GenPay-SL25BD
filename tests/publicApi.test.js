@@ -105,3 +105,36 @@ test('owner update persists the flag and never writes ticket tiers (cannot clobb
     Event.findByIdAndUpdate = origUpdate;
   }
 });
+
+test('links that are not web URLs (e.g. javascript:) are rejected when updating an event', async () => {
+  const token = jwt.sign({ id: 'hostA' }, process.env.JWT_SECRET);
+  const origHost = Host.findById;
+  const origEvent = Event.findById;
+  const origUpdate = Event.findByIdAndUpdate;
+  let updated = false;
+  Host.findById = async () => ({ _id: 'hostA' });
+  Event.findById = () => chain({ host: { _id: 'hostA' } });
+  Event.findByIdAndUpdate = async () => { updated = true; return {}; };
+  try {
+    for (const socialLinks of [{ instagram: 'javascript:alert(1)' }, { website: 'data:text/html,<script>1</script>' }]) {
+      const r = res();
+      await eventController.updateEvent(
+        { headers: { authorization: `Bearer ${token}` }, params: { id: 'e1' }, body: { eventLocation: { venue: 'x' }, socialLinks } },
+        r
+      );
+      assert.equal(r.code, 400, JSON.stringify(socialLinks));
+    }
+    assert.equal(updated, false);
+
+    const ok = res();
+    await eventController.updateEvent(
+      { headers: { authorization: `Bearer ${token}` }, params: { id: 'e1' }, body: { eventLocation: { venue: 'x' }, eventUrl: 'https://genpay.ng/explore/x', socialLinks: { instagram: 'https://instagram.com/a' } } },
+      ok
+    );
+    assert.equal(ok.code, 200);
+  } finally {
+    Host.findById = origHost;
+    Event.findById = origEvent;
+    Event.findByIdAndUpdate = origUpdate;
+  }
+});

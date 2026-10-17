@@ -14,6 +14,7 @@ const Transaction = require('../models/transaction');
 const { Parser } = require('json2csv'); // You'll need to install: npm install json2csv
 
 const { toPublicTickets, shouldShowQuantity } = require('../utils/publicEvent');
+const { isHttpUrl } = require('../utils/urls');
 // Create a new event
 exports.createEvent = async (req, res) => {
   try {
@@ -88,9 +89,7 @@ exports.createEvent = async (req, res) => {
     }
 
     if (headerImage) {
-      try {
-        new URL(headerImage);
-      } catch {
+      if (!isHttpUrl(headerImage)) {
         return res.status(400).json({
           status: 'fail',
           message: 'Invalid header image URL',
@@ -101,9 +100,7 @@ exports.createEvent = async (req, res) => {
 
     if (images && Array.isArray(images)) {
       for (const url of images) {
-        try {
-          new URL(url);
-        } catch {
+        if (!isHttpUrl(url)) {
           return res.status(400).json({
             status: 'fail',
             message: `Invalid gallery image URL: ${url}`,
@@ -124,9 +121,7 @@ exports.createEvent = async (req, res) => {
     for (const field of urlFields) {
       const url = field === 'eventUrl' ? eventUrl : socialLinks?.[field];
       if (url && url.trim()) {
-        try {
-          new URL(url);
-        } catch {
+        if (!isHttpUrl(url)) {
           return res.status(400).json({
             status: 'fail',
             message: `Invalid URL for ${field}`,
@@ -849,6 +844,12 @@ exports.updateEvent = async (req, res) => {
         status: 'fail',
         message: 'Event location must be an object with a valid venue',
       });
+    }
+
+    for (const [field, url] of [['eventUrl', eventUrl], ...Object.entries(socialLinks || {})]) {
+      if (typeof url === 'string' && url.trim() && !isHttpUrl(url)) {
+        return res.status(400).json({ status: 'fail', message: `Invalid URL for ${field}`, field });
+      }
     }
 
     const updatedEvent = await Event.findByIdAndUpdate(

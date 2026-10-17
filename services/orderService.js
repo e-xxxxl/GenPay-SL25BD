@@ -14,7 +14,7 @@ const { Readable } = require('stream');
 const { Resend } = require('resend');
 
 const { calculateFees, roundMoney, MAX_TICKETS_PER_ORDER } = require('../utils/pricing');
-const { buildTicketEmail, eventWhen } = require('../utils/ticketEmail');
+const { buildTicketEmail, buildTicketText, eventWhen, logoAttachment, qrAttachments, SUPPORT_EMAIL } = require('../utils/ticketEmail');
 
 const TICKET_NAMESPACE = '6f1d3c5e-8a41-4d3b-9b8e-2c7a5f0d1e42';
 const LOCK_MS = 2 * 60 * 1000;
@@ -52,9 +52,17 @@ const deps = {
       Readable.from(buffer).pipe(stream);
     });
   },
-  async sendEmail({ to, subject, html, attachments }) {
+  async sendEmail({ to, subject, html, text, attachments }) {
     const resend = new Resend(process.env.RESEND_API_KEY);
-    const { error } = await resend.emails.send({ from: process.env.RESEND_FROM_EMAIL, to: [to], subject, html, attachments });
+    const { error } = await resend.emails.send({
+      from: process.env.RESEND_FROM_EMAIL,
+      to: [to],
+      replyTo: SUPPORT_EMAIL,
+      subject,
+      html,
+      text,
+      attachments,
+    });
     if (error) throw new Error(error.message || 'Email provider rejected the message');
   },
 };
@@ -520,7 +528,7 @@ async function sendConfirmationEmails(orderId) {
   );
   if (!claimed) return;
 
-  const event = await deps.Event.findById(claimed.event).select('eventName startDateTime endDateTime eventLocation').lean();
+  const event = await deps.Event.findById(claimed.event).select('eventName slug startDateTime endDateTime eventLocation').lean();
   const tickets = await deps.Ticket.find({ _id: { $in: claimed.ticketIds } }).populate('buyer', 'email').lean();
   const lineByTicketId = new Map();
   claimed.lines.forEach((line, lineIdx) => {
@@ -534,7 +542,7 @@ async function sendConfirmationEmails(orderId) {
     const line = lineByTicketId.get(t.ticketId);
     if (!line) continue;
     const entry = byEmail.get(line.customer.email) || { customer: line.customer, tickets: [] };
-    entry.tickets.push({ ...t, groupSize: line.groupSize });
+    entry.tickets.push({ ...t, groupSize: line.groupSize, attendeeName: `${line.customer.firstName} ${line.customer.lastName}` });
     byEmail.set(line.customer.email, entry);
   }
 
@@ -543,11 +551,13 @@ async function sendConfirmationEmails(orderId) {
   for (const [email, { customer, tickets: list }] of byEmail) {
     if (sent.has(email)) continue;
     try {
+      const content = { order: claimed, event, customer, tickets: list };
       await deps.sendEmail({
         to: email,
-        subject: `Your Tickets for ${event.eventName}`,
-        html: buildTicketEmail({ order: claimed, event, customer, tickets: list }),
-        attachments: list.map((t, index) => ({ filename: `ticket_${t.ticketId}.png`, path: t.qrCode, cid: `qrcode${index}` })),
+        subject: `Your tickets for ${event.eventName}`,
+        html: buildTicketEmail(content),
+        text: buildTicketText(content),
+        attachments: [logoAttachment(), ...qrAttachments(list)].filter(Boolean),
       });
       await deps.Order.updateOne({ _id: claimed._id }, { $addToSet: { emailedTo: email } });
     } catch (err) {
