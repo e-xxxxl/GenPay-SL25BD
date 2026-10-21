@@ -15,6 +15,7 @@ const { Parser } = require('json2csv'); // You'll need to install: npm install j
 
 const { toPublicTickets, shouldShowQuantity } = require('../utils/publicEvent');
 const { isHttpUrl } = require('../utils/urls');
+const { hostDisplayName, HOST_NAME_FIELDS } = require('../utils/hostName');
 // Create a new event
 exports.createEvent = async (req, res) => {
   try {
@@ -1603,7 +1604,7 @@ exports.getPublicEvents = async (req, res) => {
       .select(
         'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images tickets slug showTicketQuantity'
       )
-      .populate('host', 'displayName')
+      .populate('host', HOST_NAME_FIELDS)
       .lean();
 
     const formattedEvents = events.map(event => ({
@@ -1625,7 +1626,7 @@ exports.getPublicEvents = async (req, res) => {
       tickets: toPublicTickets(event),
       showTicketQuantity: shouldShowQuantity(event),
       host: {
-        displayName: event.host?.displayName || 'Unknown Host',
+        displayName: hostDisplayName(event.host),
       },
       slug: event.slug || event.eventName
         .toLowerCase()
@@ -1667,7 +1668,7 @@ exports.getPublicEvents = async (req, res) => {
 //       .select(
 //         'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images tickets'
 //       )
-//       .populate('host', 'displayName');
+//       .populate('host', HOST_NAME_FIELDS);
 
 //     if (!event) {
 //       return res.status(404).json({
@@ -1694,7 +1695,7 @@ exports.getPublicEvents = async (req, res) => {
 //       socialLinks: event.socialLinks || {},
 //       tickets: event.tickets || [],
 //       host: {
-//         displayName: event.host?.displayName || 'Unknown Host',
+//         displayName: hostDisplayName(event.host),
 //       },
 //     };
 
@@ -2276,7 +2277,7 @@ exports.getEventByName = async (req, res) => {
       .select(
         'eventName eventDescription eventCategory startDateTime endDateTime eventLocation eventUrl socialLinks headerImage images tickets slug attendeesCount showTicketQuantity'
       )
-      .populate('host', 'displayName')
+      .populate('host', HOST_NAME_FIELDS)
       .lean();
 
     if (!event) {
@@ -2308,7 +2309,7 @@ exports.getEventByName = async (req, res) => {
       // The attendee count would let a visitor work out remaining stock, so it follows the same setting.
       ...(shouldShowQuantity(event) ? { attendeesCount: event.attendeesCount || 0 } : {}),
       host: {
-        displayName: event.host?.displayName || 'Unknown Host',
+        displayName: hostDisplayName(event.host),
       },
     };
 

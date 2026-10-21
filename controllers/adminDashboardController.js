@@ -5,6 +5,7 @@ const Payout = require('../models/payout');
 const Ticket = require('../models/ticket');
 const Admin = require('../models/admin');
 const Transaction = require('../models/transaction');
+const { hostDisplayName, HOST_NAME_FIELDS } = require('../utils/hostName');
 
 // Get dashboard statistics
 // exports.getDashboardStats = async (req, res) => {
@@ -271,59 +272,70 @@ exports.getDashboardStats = async (req, res) => {
   }
 };
 
-// Get all hosts with their events and balances
+// Get all hosts with their events and balances.
+// Query: page, limit, q (name/email/organisation search), status (verified | pending)
+const escapeRegex = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 exports.getAllHosts = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 10;
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 100);
     const skip = (page - 1) * limit;
 
-    const hosts = await Host.find()
-      .populate('events')
-      .select('displayName email phoneNumber location events availableBalance payoutInfo createdAt')
-      .skip(skip)
-      .limit(limit)
-      .sort({ createdAt: -1 });
+    const filter = {};
+    const q = String(req.query.q || '').trim().slice(0, 80);
+    if (q) {
+      const rx = new RegExp(escapeRegex(q), 'i');
+      filter.$or = [{ firstName: rx }, { lastName: rx }, { organizationName: rx }, { email: rx }];
+    }
+    if (req.query.status === 'verified') filter.isVerified = true;
+    if (req.query.status === 'pending') filter.isVerified = { $ne: true };
 
-    const totalHosts = await Host.countDocuments();
+    // displayName is a virtual built from these fields, so they must be selected explicitly.
+    const [hosts, totalHosts] = await Promise.all([
+      Host.find(filter)
+        .select(`${HOST_NAME_FIELDS} email phoneNumber location isVerified availableBalance createdAt`)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      Host.countDocuments(filter),
+    ]);
 
-    const hostsWithStats = await Promise.all(
-      hosts.map(async (host) => {
-        const events = await Event.find({ host: host._id });
-        const totalRevenue = events.reduce((sum, event) => {
-          const eventRevenue = event.tickets.reduce((eventSum, ticket) => {
-            return eventSum + (ticket.price * ticket.quantity);
-          }, 0);
-          return sum + eventRevenue;
-        }, 0);
+    // Per-host figures in two queries for the whole page (was two queries per host).
+    const ids = hosts.map((h) => h._id);
+    const [events, completedPayouts] = await Promise.all([
+      Event.find({ host: { $in: ids } }).select('host tickets').lean(),
+      Payout.find({ host: { $in: ids }, status: 'completed' }).select('host amount').lean(),
+    ]);
+    const stats = new Map(ids.map((id) => [String(id), { totalEvents: 0, totalRevenue: 0, totalPayouts: 0 }]));
+    for (const event of events) {
+      const row = stats.get(String(event.host));
+      row.totalEvents += 1;
+      row.totalRevenue += (event.tickets || []).reduce((sum, t) => sum + t.price * t.quantity, 0);
+    }
+    for (const payout of completedPayouts) stats.get(String(payout.host)).totalPayouts += payout.amount;
 
-        const payouts = await Payout.find({ host: host._id, status: 'completed' });
-        const totalPayouts = payouts.reduce((sum, payout) => sum + payout.amount, 0);
-
-        return {
-          ...host.toObject(),
-          totalRevenue,
-          totalPayouts,
-          currentBalance: host.availableBalance,
-          totalEvents: events.length
-        };
-      })
-    );
+    const hostsWithStats = hosts.map((host) => ({
+      ...host.toObject(),
+      displayName: hostDisplayName(host),
+      ...stats.get(String(host._id)),
+      currentBalance: host.availableBalance,
+    }));
 
     res.status(200).json({
       status: 'success',
       data: {
         hosts: hostsWithStats,
-        totalPages: Math.ceil(totalHosts / limit),
+        totalPages: Math.max(Math.ceil(totalHosts / limit), 1),
         currentPage: page,
-        totalHosts
-      }
+        totalHosts,
+      },
     });
   } catch (error) {
     console.error('Get all hosts error:', error);
     res.status(500).json({
       status: 'error',
-      message: 'Failed to fetch hosts'
+      message: 'Failed to fetch hosts',
     });
   }
 };
@@ -338,7 +350,7 @@ exports.getHostDetails = async (req, res) => {
         path: 'events',
         select: 'eventName eventCategory startDateTime endDateTime eventLocation tickets isPublished'
       })
-      .select('displayName email phoneNumber location payoutInfo availableBalance createdAt');
+      .select(`${HOST_NAME_FIELDS} email phoneNumber location isVerified payoutInfo availableBalance createdAt`);
 
     if (!host) {
       return res.status(404).json({

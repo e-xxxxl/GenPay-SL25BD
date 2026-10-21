@@ -3,6 +3,7 @@ const Payout = require('../models/payout');
 const PayoutApproval = require('../models/payoutApproval');
 const Host = require('../models/host');
 const nodemailer = require('nodemailer');
+const { HOST_NAME_FIELDS } = require('../utils/hostName');
 
 // Zoho Mail Transporter Configuration
 const transporter = nodemailer.createTransport({
@@ -45,7 +46,7 @@ exports.getPendingPayouts = async (req, res) => {
     const skip = (page - 1) * limit;
 
     const payouts = await Payout.find({ status: 'pending' })
-      .populate('host', 'displayName email payoutInfo')
+      .populate('host', `${HOST_NAME_FIELDS} email payoutInfo`)
       .populate('event', 'eventName')
       .sort({ createdAt: 1 })
       .skip(skip)
@@ -82,7 +83,7 @@ exports.getAllPayouts = async (req, res) => {
     if (hostId) filter.host = hostId;
 
     const payouts = await Payout.find(filter)
-      .populate('host', 'displayName email')
+      .populate('host', `${HOST_NAME_FIELDS} email`)
       .populate('event', 'eventName')
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -424,7 +425,7 @@ exports.getPayoutApprovalHistory = async (req, res) => {
     const skip = (page - 1) * limit;
 
     const approvals = await PayoutApproval.find()
-      .populate('payout')
+      .populate({ path: 'payout', populate: { path: 'host', select: `${HOST_NAME_FIELDS} email` } })
       .populate('approvedBy', 'name')
       .sort({ approvalDate: -1 })
       .skip(skip)

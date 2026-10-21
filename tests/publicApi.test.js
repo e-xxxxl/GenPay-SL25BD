@@ -15,7 +15,7 @@ const chain = (value) => {
   return q;
 };
 const res = () => ({ code: 200, body: null, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } });
-const withHost = (e) => ({ ...e, host: { displayName: 'Host Co' }, attendeesCount: 42 });
+const withHost = (e, host = { userType: 'organization', organizationName: 'Host Co' }) => ({ ...e, host, attendeesCount: 42 });
 
 test('public list: hidden events expose no counts, visible events keep them', async () => {
   const hidden = withHost(makeEvent({ showTicketQuantity: false }));
@@ -136,5 +136,34 @@ test('links that are not web URLs (e.g. javascript:) are rejected when updating 
     Host.findById = origHost;
     Event.findById = origEvent;
     Event.findByIdAndUpdate = origUpdate;
+  }
+});
+
+test('public events show the real host name (the old code showed "Unknown Host" for everyone)', async () => {
+  const cases = [
+    [{ userType: 'individual', firstName: 'Ada', lastName: 'Okafor', email: 'ada@example.com', availableBalance: 5000 }, 'Ada Okafor'],
+    [{ userType: 'organization', organizationName: 'Sporting Lagos' }, 'Sporting Lagos'],
+    [{ userType: 'individual', firstName: 'Tunde' }, 'Tunde'],
+    [{ userType: 'organization', firstName: 'Ada', lastName: 'Okafor' }, 'Ada Okafor'],
+    [null, ''],
+  ];
+  const orig = Event.find;
+  const origOne = Event.findOne;
+  try {
+    for (const [host, expected] of cases) {
+      Event.find = () => chain([withHost(makeEvent(), host)]);
+      const list = res();
+      await eventController.getPublicEvents({}, list);
+      assert.equal(list.body.data.events[0].host.displayName, expected, JSON.stringify(host));
+      assert.deepEqual(Object.keys(list.body.data.events[0].host), ['displayName'], 'no other host fields are exposed');
+
+      Event.findOne = () => chain(withHost(makeEvent(), host));
+      const one = res();
+      await eventController.getEventByName({ params: { eventName: 'lagos-night' } }, one);
+      assert.equal(one.body.data.event.host.displayName, expected);
+    }
+  } finally {
+    Event.find = orig;
+    Event.findOne = origOne;
   }
 });
