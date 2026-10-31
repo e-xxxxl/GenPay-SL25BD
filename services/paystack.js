@@ -55,4 +55,18 @@ async function verifyTransaction(reference) {
   }
 }
 
-module.exports = { ProviderError, initializeTransaction, verifyTransaction };
+// One page of the account's transactions (Paystack is the source of truth for what was paid).
+async function listTransactions({ status = 'success', from, to, page = 1, perPage = 100 } = {}) {
+  try {
+    const { data } = await client.get('/transaction', {
+      headers: authHeaders(),
+      params: { status, from, to, page, perPage },
+    });
+    const meta = data?.meta || {};
+    return { transactions: data?.data || [], page: Number(meta.page) || page, pageCount: Number(meta.pageCount) || 1, total: Number(meta.total) || 0 };
+  } catch (err) {
+    throw wrap(err);
+  }
+}
+
+module.exports = { ProviderError, initializeTransaction, verifyTransaction, listTransactions };

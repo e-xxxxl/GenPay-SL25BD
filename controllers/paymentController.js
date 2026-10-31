@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 const orders = require('../services/orderService');
+const reconcile = require('../services/reconcileService');
 const { ProviderError } = require('../services/paystack');
 const { allowedOrigins } = require('../config/origins');
 
@@ -189,8 +190,9 @@ exports.paystackWebhook = async (req, res) => {
   if (typeof reference !== 'string' || !reference) return res.status(200).json({ status: 'ignored' });
 
   try {
-    // The webhook payload is only a trigger: the order is re-verified against Paystack's API.
-    const settlement = await orders.settleOrder(reference);
+    // The payment is recorded first (so it can always be traced), then matched to its order, which
+    // is re-verified against Paystack's API: the webhook payload itself is only a trigger.
+    const { settlement } = await reconcile.reconcileTransaction({ ...event.data, reference }, 'webhook');
     // Ask Paystack to redeliver only when we may still be able to succeed later.
     const retryable = ['error', 'pending'].includes(settlement.state);
     return res.status(retryable ? 500 : 200).json({ status: settlement.state });

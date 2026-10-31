@@ -143,7 +143,11 @@ function createFakeDeps() {
   });
   const Event = new Collection();
   const sent = [];
-  const stub = { verify: async () => null, init: async () => ({ authorization_url: 'https://pay.test/x', access_code: 'ac' }) };
+  const stub = {
+    verify: async () => null,
+    init: async () => ({ authorization_url: 'https://pay.test/x', access_code: 'ac' }),
+    list: async () => ({ transactions: [], page: 1, pageCount: 1, total: 0 }),
+  };
   return {
     stub,
     sent,
@@ -153,10 +157,12 @@ function createFakeDeps() {
       Ticket,
       Transaction: new Collection({ unique: ['reference'] }),
       User: users,
+      PaymentLog: new Collection({ unique: ['reference'], defaults: { status: 'unresolved', attempts: 0 } }),
       Host: new Collection(),
       paystack: {
         verifyTransaction: (ref) => stub.verify(ref),
         initializeTransaction: (args) => stub.init(args),
+        listTransactions: (args) => stub.list(args),
       },
       uploadQr: async (_buf, id) => `https://cdn.test/${id}.png`,
       sendEmail: async (msg) => { sent.push(msg); },

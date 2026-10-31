@@ -64,21 +64,44 @@ async function sweepOnce(now = Date.now()) {
   }
 }
 
+// Reads Paystack's own list of successful payments for the last few days and settles anything we
+// have not matched. This works even if the buyer never came back and the webhook was never set up.
+const RECONCILE_EVERY_MS = 60 * 60 * 1000;
+const RECONCILE_LOOKBACK_MS = 72 * 60 * 60 * 1000;
+const BOOT_DELAY_MS = 20 * 1000;
+
+async function reconcileRecent(now = Date.now()) {
+  const summary = await require('./reconcileService').reconcileWindow({ from: new Date(now - RECONCILE_LOOKBACK_MS), to: new Date(now), maxPages: 5 });
+  if (summary.recovered || summary.needsAction || !summary.complete) console.log('[reconciler] paystack sweep:', JSON.stringify(summary));
+  return summary;
+}
+
 function start() {
   let running = false;
-  const timer = setInterval(async () => {
+  let lastReconcile = 0;
+
+  const tick = async () => {
     if (running) return;
     running = true;
     try {
       await sweepOnce();
+      if (Date.now() - lastReconcile >= RECONCILE_EVERY_MS) {
+        lastReconcile = Date.now();
+        await reconcileRecent();
+      }
     } catch (err) {
       console.error('[reconciler] sweep failed:', err.message);
     } finally {
       running = false;
     }
-  }, SWEEP_MS);
+  };
+
+  // Hosting that sleeps when idle (e.g. free tiers) would otherwise leave payments waiting for the
+  // next 5-minute tick of an instance that has only just woken up: catch up straight away.
+  setTimeout(tick, BOOT_DELAY_MS).unref();
+  const timer = setInterval(tick, SWEEP_MS);
   timer.unref();
   return timer;
 }
 
-module.exports = { start, sweepOnce };
+module.exports = { start, sweepOnce, reconcileRecent };

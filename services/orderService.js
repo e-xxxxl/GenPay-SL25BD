@@ -40,6 +40,7 @@ const deps = {
   Ticket: require('../models/ticket'),
   Transaction: require('../models/transaction'),
   User: require('../models/user'),
+  PaymentLog: require('../models/paymentLog'),
   Host: require('../models/host'),
   paystack: require('./paystack'),
   uploadQr(buffer, publicId) {
@@ -399,6 +400,7 @@ async function runFulfilment(order) {
  */
 async function settleOrder(reference) {
   let order = await deps.Order.findOne({ reference });
+  if (!order) order = await adoptFulfilledPurchase(reference); // never issue tickets twice
   if (!order) order = await adoptLegacyTransaction(reference);
   if (!order) return { state: 'not_found' };
 
@@ -424,12 +426,10 @@ async function settleOrder(reference) {
     const currencyOk = String(tx.currency || '').toUpperCase() === order.currency;
     const referenceOk = tx.reference === order.reference;
     if (!amountOk || !currencyOk || !referenceOk) {
-      await deps.Order.updateOne(
-        { _id: order._id },
-        { $set: { status: 'mismatch', failureReason: `expected ${order.amountKobo} ${order.currency}, provider reported ${tx.amount} ${tx.currency}` } }
-      );
-      console.error(`[orders] payment mismatch for ${order.reference}`);
-      return { state: 'mismatch', order };
+      const detail = `Paid ${tx.amount} ${tx.currency} (kobo), but the order expected ${order.amountKobo} ${order.currency}.`;
+      await deps.Order.updateOne({ _id: order._id }, { $set: { status: 'mismatch', failureReason: detail } });
+      console.error(`[orders] payment mismatch for ${order.reference}: ${detail}`);
+      return { state: 'mismatch', order, detail };
     }
   }
 
@@ -569,6 +569,40 @@ async function sendConfirmationEmails(orderId) {
 }
 
 // ---------------------------------------------------------------- legacy in-flight payments
+
+/**
+ * Purchases fulfilled by the previous checkout have a Transaction (and tickets) but no Order.
+ * Record them as completed Orders so they are traceable, WITHOUT issuing anything again.
+ */
+async function adoptFulfilledPurchase(reference) {
+  const existing = await deps.Transaction.findOne({ reference }).lean();
+  if (!existing) return null;
+  const ticketIds = existing.tickets || [];
+  const firstTicket = ticketIds.length ? await deps.Ticket.findOne({ _id: ticketIds[0] }).populate('buyer', 'email').lean() : null;
+  try {
+    return await deps.Order.create({
+      reference,
+      event: existing.event,
+      provider: existing.paymentProvider === 'free' ? 'free' : 'paystack',
+      status: 'completed',
+      email: firstTicket?.buyer?.email || 'unknown',
+      subtotal: existing.amount,
+      fees: existing.fees,
+      total: existing.total,
+      amountKobo: Math.round(existing.total * 100),
+      currency: 'NGN',
+      ticketIds,
+      transaction: existing._id,
+      completedAt: existing.createdAt,
+      hostCredited: true, // the old flow already credited the host
+      emailSentAt: existing.createdAt, // and already emailed the tickets
+      legacy: true,
+    });
+  } catch (err) {
+    if (err.code === 11000) return deps.Order.findOne({ reference });
+    throw err;
+  }
+}
 
 /**
  * Payments started by the previous version of the checkout (before Orders existed) carry their

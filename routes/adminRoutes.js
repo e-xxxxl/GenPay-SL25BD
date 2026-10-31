@@ -4,6 +4,7 @@ const router = express.Router();
 const adminAuthController = require('../controllers/adminAuthController');
 const adminDashboardController = require('../controllers/adminDashboardController');
 const adminPayoutController = require('../controllers/adminPayoutController');
+const adminPaymentController = require('../controllers/adminPaymentController');
 const rateLimit = require('express-rate-limit');
 
 // Rate limiting
@@ -39,5 +40,15 @@ router.get('/payouts', adminAuthController.protect, adminPayoutController.getAll
 router.post('/payouts/approve', adminAuthController.protect, adminPayoutController.uploadProof, adminPayoutController.approvePayout);
 router.post('/payouts/reject', adminAuthController.protect, adminPayoutController.rejectPayout);
 router.get('/payouts/approval-history', adminAuthController.protect, adminPayoutController.getPayoutApprovalHistory);
+
+// Payment tracing and recovery
+const protect = adminAuthController.protect;
+router.get('/payments/summary', adminLimiter, protect, adminPaymentController.summary);
+router.get('/payments/orders', adminLimiter, protect, adminPaymentController.listOrders);
+router.get('/payments/orders/:reference', adminLimiter, protect, adminPaymentController.getOrder);
+router.get('/payments/unmatched', adminLimiter, protect, adminPaymentController.listUnmatched);
+router.post('/payments/reconcile', adminLimiter, protect, adminPaymentController.runReconcile);
+router.post('/payments/:reference/retry', adminLimiter, protect, adminPaymentController.retry);
+router.post('/payments/:reference/dismiss', adminLimiter, protect, adminPaymentController.dismiss);
 
 module.exports = router;
