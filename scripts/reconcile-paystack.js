@@ -16,14 +16,20 @@
  */
 require('dotenv').config();
 const mongoose = require('mongoose');
+
+const apply = process.argv.includes('--apply');
+// A dry run must not write anything, including the collections/indexes Mongoose would otherwise create.
+if (!apply) {
+  mongoose.set('autoIndex', false);
+  mongoose.set('autoCreate', false);
+}
+
 const Order = require('../models/order');
 const Transaction = require('../models/transaction');
 const paystack = require('../services/paystack');
 const reconcile = require('../services/reconcileService');
 
 const arg = (name) => (process.argv.find((a) => a.startsWith(`--${name}=`)) || '').split('=')[1];
-const apply = process.argv.includes('--apply');
-
 const naira = (kobo) => `₦${(Number(kobo) / 100).toLocaleString('en-NG')}`;
 
 async function classify(tx) {

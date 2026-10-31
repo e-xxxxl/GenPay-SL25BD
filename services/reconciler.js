@@ -31,7 +31,19 @@ async function sweepOnce(now = Date.now()) {
     .limit(BATCH)
     .select('reference');
 
-  for (const { reference } of due) {
+  // Orders parked as "mismatch" are re-checked hourly for a month: the amount rule has been wrong
+  // before (it once rejected payments that included Paystack's processing fee), and a corrected
+  // rule should be able to release them without anyone touching them.
+  const mismatched = await Order.find({
+    provider: 'paystack',
+    status: 'mismatch',
+    createdAt: { $gt: ago(30 * 24 * 60 * 60 * 1000) },
+    lastCheckedAt: { $lt: ago(SLOW_CHECK_MS) },
+  })
+    .limit(BATCH)
+    .select('reference');
+
+  for (const { reference } of [...due, ...mismatched]) {
     try {
       await orders.settleOrder(reference);
     } catch (err) {

@@ -191,6 +191,36 @@ async function createOrder(event, cart, { provider, email }) {
   });
 }
 
+// ---------------------------------------------------------------- payment check
+
+// Paystack can charge the buyer the order amount PLUS its processing fee (when fees are set to be
+// paid by the customer). That is an overpayment, not a mismatch, so it is accepted up to a sane
+// ceiling. An UNDERpayment, another currency, or another reference is never accepted.
+const OVERPAY_RATIO = 0.05;
+const OVERPAY_FLOOR_KOBO = 20000; // N200
+
+function checkPayment(tx, order) {
+  const paid = Number(tx.amount);
+  const expected = order.amountKobo;
+  const ceiling = Math.ceil(expected * (1 + OVERPAY_RATIO)) + OVERPAY_FLOOR_KOBO;
+  const requested = Number(tx.requested_amount);
+
+  if (tx.reference !== order.reference) return { ok: false, detail: 'The provider returned a different payment reference.' };
+  if (String(tx.currency || '').toUpperCase() !== order.currency) {
+    return { ok: false, detail: `Paid in ${tx.currency}, but the order is in ${order.currency}.` };
+  }
+  if (!Number.isFinite(paid) || paid < expected) {
+    return { ok: false, detail: `Paid ${tx.amount} ${tx.currency} (kobo), but the order expected ${expected} ${order.currency}.` };
+  }
+  if (paid > ceiling) {
+    return { ok: false, detail: `Paid ${tx.amount} ${tx.currency} (kobo), far above the ${expected} the order expected.` };
+  }
+  if (Number.isFinite(requested) && requested > 0 && requested !== expected) {
+    return { ok: false, detail: `The payment was requested for ${requested} (kobo), but the order is ${expected}.` };
+  }
+  return { ok: true, paid };
+}
+
 // ---------------------------------------------------------------- fulfilment
 
 async function mapLimit(items, limit, fn) {
@@ -386,6 +416,7 @@ async function runFulfilment(order) {
         ticketIds: tickets.map((t) => t._id),
         transaction: transaction._id,
         lastError: null,
+        failureReason: null,
       },
     },
     { new: true }
@@ -405,10 +436,12 @@ async function settleOrder(reference) {
   if (!order) return { state: 'not_found' };
 
   if (order.status === 'completed') return withResult({ state: 'completed', order });
-  if (['unfulfillable', 'mismatch'].includes(order.status)) return { state: order.status, order };
+  // 'mismatch' is re-checked on purpose: it may have been recorded by an older, stricter rule.
+  if (order.status === 'unfulfillable') return { state: order.status, order };
 
   await deps.Order.updateOne({ _id: order._id }, { $set: { lastCheckedAt: new Date() } });
 
+  let amountPaidKobo;
   if (order.provider === 'paystack') {
     const tx = await deps.paystack.verifyTransaction(reference);
     if (!tx) return { state: 'pending', order };
@@ -422,15 +455,14 @@ async function settleOrder(reference) {
       return { state: failed ? 'failed' : 'pending', order };
     }
 
-    const amountOk = Number(tx.amount) === order.amountKobo;
-    const currencyOk = String(tx.currency || '').toUpperCase() === order.currency;
-    const referenceOk = tx.reference === order.reference;
-    if (!amountOk || !currencyOk || !referenceOk) {
-      const detail = `Paid ${tx.amount} ${tx.currency} (kobo), but the order expected ${order.amountKobo} ${order.currency}.`;
+    const verdict = checkPayment(tx, order);
+    if (!verdict.ok) {
+      const detail = verdict.detail;
       await deps.Order.updateOne({ _id: order._id }, { $set: { status: 'mismatch', failureReason: detail } });
       console.error(`[orders] payment mismatch for ${order.reference}: ${detail}`);
       return { state: 'mismatch', order, detail };
     }
+    amountPaidKobo = verdict.paid;
   }
 
   // Claim the fulfilment lock. Only one worker can win; a stale lock (crashed worker) is taken over.
@@ -438,11 +470,11 @@ async function settleOrder(reference) {
     {
       _id: order._id,
       $or: [
-        { status: { $in: ['pending', 'expired', 'failed'] } },
+        { status: { $in: ['pending', 'expired', 'failed', 'mismatch'] } },
         { status: 'processing', lockedAt: { $lt: new Date(Date.now() - LOCK_MS) } },
       ],
     },
-    { $set: { status: 'processing', lockedAt: new Date(), paidAt: order.paidAt || new Date() } },
+    { $set: { status: 'processing', lockedAt: new Date(), paidAt: order.paidAt || new Date(), ...(amountPaidKobo ? { amountPaidKobo } : {}) } },
     { new: true }
   );
   if (!claimed) {
@@ -648,6 +680,7 @@ module.exports = {
   OrderError,
   deps,
   buildCart,
+  checkPayment,
   assertSellable,
   createOrder,
   settleOrder,

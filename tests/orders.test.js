@@ -88,9 +88,9 @@ test('amount, currency or reference mismatch is never fulfilled', async () => {
     assert.equal(out.state, 'mismatch', JSON.stringify(override));
     assert.equal(fake.deps.Ticket.docs.length, 0);
     assert.equal(fake.stock('t1'), 3);
-    // and it stays mismatched even if the provider later "agrees"
+    // A mismatch is not a dead end: if the provider's data is later correct, the order settles.
     fake.stub.verify = async (ref) => fake.paidFor(ref);
-    assert.equal((await orders.settleOrder(order.reference)).state, 'mismatch');
+    assert.equal((await orders.settleOrder(order.reference)).state, 'completed');
   }
 });
 
@@ -284,4 +284,54 @@ test('in-flight payments from the old checkout are adopted only at the server-co
   await payments.verifyPayment({ params: { reference: 'GENPAY_old2' } }, r);
   assert.equal(r.code, 409);
   assert.equal(fake2.deps.Ticket.docs.length, 0);
+});
+
+// ------------------------------------------------------------------ Paystack processing fee (production bug)
+
+test('a payment that includes Paystack\'s processing fee is accepted, and the amount actually charged is recorded', async () => {
+  // Real figures from production: orders of N5,250 and N6,615 were charged N5,324.55 and N6,708.93.
+  for (const [orderTickets, charged] of [[cart('t1', 1), 532455], [cart('t2', 1), 2121000]]) {
+    const fake = setup();
+    const order = await newOrder(fake, orderTickets);
+    const chargedKobo = Math.round(order.amountKobo * 1.0142);
+    fake.stub.verify = async (ref) => fake.paidFor(ref, { amount: chargedKobo, requested_amount: order.amountKobo, fees: 17875 });
+    const out = await orders.settleOrder(order.reference);
+    assert.equal(out.state, 'completed', `charged ${chargedKobo} for an order of ${order.amountKobo} (${charged})`);
+    assert.equal(fake.deps.Order.docs[0].amountPaidKobo, chargedKobo);
+    assert.equal(fake.deps.Order.docs[0].amountKobo, order.amountKobo, 'the order total itself is unchanged');
+    assert.equal(fake.deps.Ticket.docs.length, 1);
+  }
+});
+
+test('underpaying by even one kobo, wildly overpaying, or a different requested amount is still refused', () => {
+  const order = { reference: 'R', amountKobo: 525000, currency: 'NGN' };
+  const tx = (over) => ({ reference: 'R', currency: 'NGN', status: 'success', amount: 525000, ...over });
+  assert.equal(orders.checkPayment(tx({}), order).ok, true);
+  assert.equal(orders.checkPayment(tx({ amount: 532455 }), order).ok, true);
+  assert.equal(orders.checkPayment(tx({ amount: 524999 }), order).ok, false, 'one kobo short');
+  assert.equal(orders.checkPayment(tx({ amount: 5250000 }), order).ok, false, 'ten times the order');
+  assert.equal(orders.checkPayment(tx({ amount: 532455, requested_amount: 100 }), order).ok, false, 'requested a different amount');
+  assert.equal(orders.checkPayment(tx({ currency: 'USD' }), order).ok, false);
+  assert.equal(orders.checkPayment(tx({ reference: 'other' }), order).ok, false);
+});
+
+test('orders wrongly parked as "mismatch" by the old rule are released by the next sweep', async () => {
+  const fake = setup();
+  const reconciler = require('../services/reconciler');
+  const order = await newOrder(fake, cart('t1', 1));
+  // exactly what production holds: parked as mismatch, Paystack says success with the fee added
+  Object.assign(fake.deps.Order.docs[0], {
+    status: 'mismatch',
+    paystackStatus: 'success',
+    failureReason: `expected ${order.amountKobo} NGN, provider reported ${Math.round(order.amountKobo * 1.0142)} NGN`,
+    lastCheckedAt: new Date(Date.now() - 2 * 60 * 60 * 1000),
+    createdAt: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000),
+  });
+  fake.stub.verify = async (ref) => fake.paidFor(ref, { amount: Math.round(order.amountKobo * 1.0142) });
+
+  await reconciler.sweepOnce();
+  assert.equal(fake.deps.Order.docs[0].status, 'completed');
+  assert.equal(fake.deps.Order.docs[0].failureReason, null);
+  assert.equal(fake.deps.Ticket.docs.length, 1);
+  assert.equal(fake.stock('t1'), 2);
 });

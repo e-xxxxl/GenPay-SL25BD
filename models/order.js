@@ -30,6 +30,9 @@ const orderSchema = new mongoose.Schema(
     amountKobo: { type: Number, required: true, min: 0 },
     currency: { type: String, default: 'NGN' },
     paystackStatus: String,
+    // What the buyer was actually charged. Paystack can add its processing fee on top of the order
+    // amount, so this can be slightly above amountKobo.
+    amountPaidKobo: Number,
     paidAt: Date,
     lockedAt: Date,
     lastCheckedAt: { type: Date, default: Date.now },

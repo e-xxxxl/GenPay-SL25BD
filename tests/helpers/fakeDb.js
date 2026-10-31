@@ -84,7 +84,7 @@ function applyUpdate(doc, update, filter) {
 
 // Thenable that also tolerates the Mongoose chain methods the service calls.
 function query(promiseFn) {
-  const q = { select: () => q, lean: () => q, populate: () => q, then: (a, b) => promiseFn().then(a, b) };
+  const q = { select: () => q, lean: () => q, populate: () => q, limit: () => q, sort: () => q, then: (a, b) => promiseFn().then(a, b) };
   return q;
 }
 
@@ -117,6 +117,12 @@ class Collection {
     if (!doc) return { matchedCount: 0, modifiedCount: 0 };
     applyUpdate(doc, update, filter);
     return { matchedCount: 1, modifiedCount: 1 };
+  }
+  async updateMany(filter, update) {
+    await yieldTurn();
+    const matched = this.docs.filter((d) => match(d, filter));
+    matched.forEach((doc) => applyUpdate(doc, update, filter));
+    return { matchedCount: matched.length, modifiedCount: matched.length };
   }
   async findOneAndUpdate(filter, update, opts = {}) {
     await yieldTurn();
