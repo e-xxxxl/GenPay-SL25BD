@@ -14,6 +14,7 @@ const { Readable } = require('stream');
 const { Resend } = require('resend');
 
 const { calculateFees, roundMoney, MAX_TICKETS_PER_ORDER } = require('../utils/pricing');
+const { buildHostSaleEmail, buildHostSaleText, hostSaleSubject } = require('../utils/hostSaleEmail');
 const { buildTicketEmail, buildTicketText, eventWhen, logoAttachment, qrAttachments, SUPPORT_EMAIL } = require('../utils/ticketEmail');
 
 const TICKET_NAMESPACE = '6f1d3c5e-8a41-4d3b-9b8e-2c7a5f0d1e42';
@@ -487,6 +488,7 @@ async function settleOrder(reference) {
     const outcome = await runFulfilment(claimed);
     if (outcome.state !== 'completed') return { ...outcome, order: await deps.Order.findById(order._id) };
     scheduleEmail(outcome.order._id);
+    scheduleHostNotification(outcome.order._id);
     return withResult(outcome);
   } catch (err) {
     // Release the lock so the sweeper / next verify resumes from where we stopped.
@@ -538,6 +540,52 @@ async function buildResult(order) {
 
 async function withResult(outcome) {
   return { ...outcome, result: await buildResult(outcome.order) };
+}
+
+// The event host is told about every completed order. It has its own claim/flag so it is sent once,
+// retried if the mail provider fails, and never blocks (or fails) the buyer's tickets.
+function scheduleHostNotification(orderId) {
+  sendHostNotification(orderId).catch((err) => console.error('[orders] host notification error:', err.message));
+}
+
+async function sendHostNotification(orderId) {
+  const claimed = await deps.Order.findOneAndUpdate(
+    {
+      _id: orderId,
+      status: 'completed',
+      hostNotifiedAt: null,
+      // Orders created before this field existed have no counter at all: treat "missing" as zero.
+      $and: [
+        { $or: [{ hostNotifyAttempts: null }, { hostNotifyAttempts: { $lt: MAX_EMAIL_ATTEMPTS } }] },
+        { $or: [{ hostNotifyClaimedAt: null }, { hostNotifyClaimedAt: { $lt: new Date(Date.now() - EMAIL_RETRY_MS) } }] },
+      ],
+    },
+    { $set: { hostNotifyClaimedAt: new Date() }, $inc: { hostNotifyAttempts: 1 } },
+    { new: true }
+  );
+  if (!claimed) return;
+
+  try {
+    const event = await deps.Event.findById(claimed.event).select('eventName host').lean();
+    const host = event ? await deps.Host.findOne({ _id: event.host }).select('email firstName organizationName').lean() : null;
+    if (!host?.email) {
+      // Nobody to tell; do not keep retrying.
+      await deps.Order.updateOne({ _id: claimed._id }, { $set: { hostNotifiedAt: new Date() } });
+      return;
+    }
+    const soldSoFar = await deps.Ticket.countDocuments({ event: claimed.event });
+    const content = { order: claimed, event, host, soldSoFar };
+    await deps.sendEmail({
+      to: host.email,
+      subject: hostSaleSubject(content),
+      html: buildHostSaleEmail(content),
+      text: buildHostSaleText(content),
+      attachments: [logoAttachment()].filter(Boolean),
+    });
+    await deps.Order.updateOne({ _id: claimed._id }, { $set: { hostNotifiedAt: new Date() } });
+  } catch (err) {
+    console.error(`[orders] could not notify the host for ${claimed.reference}:`, err.message);
+  }
 }
 
 function scheduleEmail(orderId) {
@@ -628,6 +676,7 @@ async function adoptFulfilledPurchase(reference) {
       completedAt: existing.createdAt,
       hostCredited: true, // the old flow already credited the host
       emailSentAt: existing.createdAt, // and already emailed the tickets
+      hostNotifiedAt: existing.createdAt, // earlier purchases are not announced to hosts after the fact
       legacy: true,
     });
   } catch (err) {
@@ -686,6 +735,7 @@ module.exports = {
   settleOrder,
   buildResult,
   sendConfirmationEmails,
+  sendHostNotification,
   newReference,
   LOCK_MS,
 };

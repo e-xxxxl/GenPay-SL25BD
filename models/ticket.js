@@ -45,6 +45,8 @@ const ticketSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  // Which host account scanned this ticket in (audit trail for the door).
+  checkedInBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Host' },
   isUsed: {
     type: Boolean,
     default: false,

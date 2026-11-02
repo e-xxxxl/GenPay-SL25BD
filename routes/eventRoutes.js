@@ -32,6 +32,15 @@ const verifyLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// A busy door scans several guests a minute from one network; this only stops abuse.
+const scanLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  message: { status: 'fail', message: 'Too many scans too quickly. Please wait a moment.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 const pingLimiter = rateLimit({
   windowMs: 10 * 60 * 1000, // 10 minutes
   max: 100, // Allow 100 requests per 10 minutes
@@ -67,7 +76,9 @@ router.put('/:id/tickets/:ticketId', authController.protect, eventController.edi
 router.get('/:id/getTickets', authController.protect, eventController.getEventTickets);
 router.delete('/:id/tickets/:ticketId', authController.protect, eventController.deleteTicket);
 
-router.post("/:id/check-in-ticket", eventController.checkInTicket);
+// Door: all behind the host login, so req.user is always the signed-in host.
+router.post('/:id/check-in-ticket', authController.protect, scanLimiter, eventController.checkInTicket);
+router.post('/:id/undo-check-in', authController.protect, scanLimiter, eventController.undoCheckIn);
 // routes/eventRouter.js
 router.post('/:id/search-ticket', authController.protect, eventController.searchTicket);
 // routes/eventRouter.js

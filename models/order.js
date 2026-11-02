@@ -43,6 +43,10 @@ const orderSchema = new mongoose.Schema(
     failureReason: String,
     lastError: String,
     legacy: { type: Boolean, default: false },
+    // Notification to the event host that a sale happened (separate from the buyer's email).
+    hostNotifiedAt: Date,
+    hostNotifyClaimedAt: Date,
+    hostNotifyAttempts: { type: Number, default: 0 },
     emailSentAt: Date,
     emailClaimedAt: Date,
     emailedTo: [String],

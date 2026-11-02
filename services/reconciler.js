@@ -74,6 +74,13 @@ async function sweepOnce(now = Date.now()) {
   for (const { _id } of unemailed) {
     await orders.sendConfirmationEmails(_id).catch((err) => console.error('[reconciler] email:', err.message));
   }
+
+  const unnotified = await Order.find({ status: 'completed', hostNotifiedAt: null, $or: [{ hostNotifyAttempts: null }, { hostNotifyAttempts: { $lt: 5 } }], completedAt: { $gt: ago(24 * 60 * 60 * 1000) } })
+    .limit(BATCH)
+    .select('_id');
+  for (const { _id } of unnotified) {
+    await orders.sendHostNotification(_id).catch((err) => console.error('[reconciler] host notification:', err.message));
+  }
 }
 
 // Reads Paystack's own list of successful payments for the last few days and settles anything we

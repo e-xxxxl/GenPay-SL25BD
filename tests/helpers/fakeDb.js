@@ -23,6 +23,11 @@ const eq = (a, b) => (a instanceof Date || b instanceof Date ? +a === +b : Strin
 const isOps = (c) => c && typeof c === 'object' && !(c instanceof Date) && Object.keys(c).some((k) => k.startsWith('$'));
 
 function matchCond(list, cond) {
+  if (cond instanceof RegExp) return list.some((v) => v != null && cond.test(String(v)));
+  if (cond && typeof cond === 'object' && '$regex' in cond) {
+    const rx = new RegExp(cond.$regex, cond.$options);
+    return list.some((v) => v != null && rx.test(String(v)));
+  }
   if (!isOps(cond)) {
     if (cond === null) return list.every((v) => v == null);
     return list.some((v) => eq(v, cond));
@@ -44,6 +49,7 @@ function matchCond(list, cond) {
 function match(doc, filter) {
   return Object.entries(filter).every(([key, cond]) => {
     if (key === '$or') return cond.some((f) => match(doc, f));
+    if (key === '$and') return cond.every((f) => match(doc, f));
     return matchCond(values(doc, key), cond);
   });
 }
@@ -79,6 +85,11 @@ function applyUpdate(doc, update, filter) {
     if (!arr.some((x) => eq(x, v))) setPath(doc, path, [...arr, v]);
   }
   for (const [path, v] of Object.entries(update.$pull || {})) setPath(doc, path, (getPath(doc, path) || []).filter((x) => !eq(x, v)));
+  for (const path of Object.keys(update.$unset || {})) {
+    const parts = path.split('.');
+    const holder = parts.slice(0, -1).reduce((c, k) => (c == null ? c : c[k]), doc);
+    if (holder) delete holder[parts.at(-1)];
+  }
   for (const [path, v] of Object.entries(update.$setOnInsert || {})) if (doc.__inserted) setPath(doc, path, clone(v));
 }
 
@@ -109,6 +120,14 @@ class Collection {
   findById(id) { return this.findOne({ _id: id }); }
   find(filter) {
     return query(async () => { await yieldTurn(); return this.docs.filter((d) => match(d, filter)).map(clone); });
+  }
+  async distinct(field, filter = {}) {
+    await yieldTurn();
+    return [...new Set(this.docs.filter((d) => match(d, filter)).map((d) => d[field]))];
+  }
+  async countDocuments(filter = {}) {
+    await yieldTurn();
+    return this.docs.filter((d) => match(d, filter)).length;
   }
   async exists(filter) { await yieldTurn(); return this.docs.some((d) => match(d, filter)) ? { _id: 1 } : null; }
   async updateOne(filter, update) {
@@ -145,6 +164,7 @@ function createFakeDeps() {
   const tickets = new Collection({ unique: ['ticketId'] });
   const populateBuyer = (list) => list.map((t) => ({ ...t, buyer: users.docs.find((u) => u._id === t.buyer) }));
   const Ticket = Object.assign(tickets, {
+    findOne: (filter) => query(async () => { await yieldTurn(); const doc = tickets.docs.find((d) => match(d, filter)); return doc ? populateBuyer([clone(doc)])[0] : null; }),
     find: (filter) => query(async () => { await yieldTurn(); return populateBuyer(tickets.docs.filter((d) => match(d, filter)).map(clone)); }),
   });
   const Event = new Collection();

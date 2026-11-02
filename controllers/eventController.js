@@ -1715,246 +1715,218 @@ exports.getPublicEvents = async (req, res) => {
 //   }
 // };
 
-// Search ticket
+// ---------------------------------------------------------------- door: search, check-in, undo
+// These handlers run behind authController.protect, so req.user is the signed-in host.
+
+const escapeRegex = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Looks up the event and makes sure the signed-in host owns it. Sends the error response itself
+// and returns null when the request should stop.
+async function loadOwnedEvent(req, res, action) {
+  const { id } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(id)) {
+    res.status(400).json({ status: 'fail', code: 'bad_event', message: 'Invalid event.' });
+    return null;
+  }
+  const event = await Event.findById(id).select('host eventName tickets');
+  if (!event) {
+    res.status(404).json({ status: 'fail', code: 'event_not_found', message: 'Event not found' });
+    return null;
+  }
+  if (String(event.host) !== String(req.user._id)) {
+    res.status(403).json({ status: 'fail', code: 'forbidden', message: `You are not authorized to ${action} for this event` });
+    return null;
+  }
+  return event;
+}
+
+// A scanned QR contains JSON ({ticketId, eventId, ...}); manual entry is the bare id. Accept both.
+function parseScan(raw) {
+  const text = typeof raw === 'string' ? raw.trim().slice(0, 2000) : '';
+  if (!text) return { ticketId: '', eventId: null };
+  if (text.startsWith('{')) {
+    try {
+      const data = JSON.parse(text);
+      return { ticketId: String(data.ticketId || data.id || '').trim(), eventId: data.eventId ? String(data.eventId) : null };
+    } catch {
+      // not JSON after all: treat it as a plain id
+    }
+  }
+  return { ticketId: text, eventId: null };
+}
+
+const tierOf = (event, ticket) =>
+  event.tickets.find((t) => t.id && t.id === ticket.tierId) || event.tickets.find((t) => t.name === ticket.name);
+
+const ticketView = (ticket, event) => {
+  const tier = tierOf(event, ticket);
+  return {
+    id: ticket.ticketId || String(ticket._id),
+    event: { id: String(event._id), eventName: event.eventName },
+    buyer: {
+      email: ticket.buyer?.email || null,
+      firstName: ticket.buyer?.firstName || '',
+      lastName: ticket.buyer?.lastName || '',
+      phone: ticket.buyer?.phone || null,
+    },
+    type: ticket.type,
+    name: ticket.name,
+    groupSize: tier && tier.ticketType === 'Group' ? tier.groupSize : null,
+    status: ticket.isUsed ? 'used' : 'valid',
+    usedAt: ticket.usedAt || null,
+  };
+};
+
+const lookupFilter = (eventId, ticketId) => ({
+  event: eventId,
+  $or: [{ ticketId }, ...(mongoose.Types.ObjectId.isValid(ticketId) ? [{ _id: ticketId }] : [])],
+});
+
+// Search
 exports.searchTicket = async (req, res) => {
   try {
-    const token = req.headers.authorization?.split(" ")[1];
-    if (!token) {
-      return res.status(401).json({ status: "fail", message: "No authentication token provided" });
-    }
+    const event = await loadOwnedEvent(req, res, 'search tickets');
+    if (!event) return;
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const host = await Host.findById(decoded.id);
-    if (!host) {
-      return res.status(404).json({ status: "fail", message: "Host not found" });
-    }
+    const raw = typeof req.body?.search === 'string' ? req.body.search.trim().slice(0, 200) : '';
+    if (!raw) return res.status(400).json({ status: 'fail', message: 'Search query is required' });
+    const { ticketId: scanned } = parseScan(raw);
+    const query = scanned || raw;
 
-    const { id } = req.params; // eventId
-    const { search } = req.body;
-    if (!search) {
-      return res.status(400).json({ status: "fail", message: "Search query is required" });
-    }
-
-    console.log("Searching for:", search, "in event:", id);
-    const event = await Event.findById(id).select("host tickets");
-    if (!event) {
-      return res.status(404).json({ status: "fail", message: "Event not found" });
-    }
-
-    if (event.host.toString() !== host._id.toString()) {
-      return res.status(403).json({
-        status: "fail",
-        message: "You are not authorized to search tickets for this event",
-      });
-    }
-
-    const tickets = await Ticket.find({
-      event: id,
+    const populate = [{ path: 'buyer', select: 'email firstName lastName phone' }];
+    // 1) exact ticket id (what a scan or a pasted id gives us), or a prefix of one
+    const exact = {
+      event: event._id,
       $or: [
-        { ticketId: search },
-        ...(mongoose.Types.ObjectId.isValid(search) ? [{ _id: search }] : []),
+        { ticketId: query },
+        ...(mongoose.Types.ObjectId.isValid(query) ? [{ _id: query }] : []),
+        ...(query.length >= 6 ? [{ ticketId: { $regex: '^' + escapeRegex(query), $options: 'i' } }] : []),
       ],
-    })
-      .populate('buyer', 'email firstName lastName')
-      .populate('event', 'eventName')
-      .limit(10);
+    };
+    let tickets = await Ticket.find(exact).populate(populate).limit(20);
 
-    // Additional search by buyer email
+    // 2) otherwise by buyer name or email, only among people who hold a ticket for THIS event
     if (!tickets.length) {
-      const users = await User.find({ email: { $regex: search, $options: 'i' } }).select('_id');
+      const buyerIds = await Ticket.distinct('buyer', { event: event._id });
+      const tokens = query.split(/\s+/).filter(Boolean).slice(0, 4).map((t) => new RegExp(escapeRegex(t), 'i'));
+      const users = await User.find({
+        _id: { $in: buyerIds },
+        $and: tokens.map((rx) => ({ $or: [{ email: rx }, { firstName: rx }, { lastName: rx }] })),
+      })
+        .select('_id')
+        .limit(50);
       if (users.length) {
-        const userIds = users.map(user => user._id);
-        const ticketsByEmail = await Ticket.find({
-          event: id,
-          buyer: { $in: userIds },
-        })
-          .populate('buyer', 'email firstName lastName')
-          .populate('event', 'eventName')
-          .limit(10);
-        tickets.push(...ticketsByEmail);
+        tickets = await Ticket.find({ event: event._id, buyer: { $in: users.map((u) => u._id) } }).populate(populate).limit(20);
       }
     }
 
     if (!tickets.length) {
-      return res.status(404).json({ status: "fail", message: "No tickets found for the provided email or ticket ID" });
+      return res.status(404).json({ status: 'fail', code: 'not_found', message: 'No tickets found for that name, email or ticket ID' });
     }
-
-    // Fetch groupSize from the original event ticket definition
-    const formattedTickets = tickets.map((ticket) => {
-      const originalTicket = event.tickets.find(t => t.id === ticket.ticketId);
-      const groupSize = originalTicket && originalTicket.ticketType === 'Group' ? originalTicket.groupSize : null;
-      return {
-        id: ticket.ticketId || ticket._id.toString(),
-        event: {
-          id: ticket.event._id.toString(),
-          eventName: ticket.event.eventName,
-        },
-        buyer: {
-          email: ticket.buyer.email,
-          firstName: ticket.buyer.firstName,
-          lastName: ticket.buyer.lastName,
-        },
-        type: ticket.type,
-        usedAt: ticket.usedAt,
-        status: ticket.isUsed ? "used" : "valid",
-        groupSize: groupSize, // Include groupSize only for Group tickets
-      };
-    });
-
-    res.status(200).json({
-      status: "success",
-      data: { tickets: formattedTickets },
-      message: "Tickets found",
-    });
+    res.status(200).json({ status: 'success', data: { tickets: tickets.map((t) => ticketView(t, event)) }, message: 'Tickets found' });
   } catch (error) {
-    console.error("Error searching ticket:", error);
-    res.status(500).json({
-      status: "error",
-      message: "Failed to search ticket",
-    });
+    console.error('Error searching ticket:', error);
+    res.status(500).json({ status: 'error', message: 'Failed to search ticket' });
   }
 };
-// Check-in ticket
-// controllers/eventController.js
+
+// Check in. The "not yet used" test and the write are ONE atomic update, so two scanners reading
+// the same ticket at the same moment cannot both admit it.
 exports.checkInTicket = async (req, res) => {
   try {
-    const token = req.headers.authorization?.split(" ")[1];
-    if (!token) {
-      return res.status(401).json({ status: "fail", message: "No authentication token provided" });
+    const event = await loadOwnedEvent(req, res, 'check in tickets');
+    if (!event) return;
+
+    const { ticketId, eventId: qrEventId } = parseScan(req.body?.ticketId);
+    if (!ticketId) return res.status(400).json({ status: 'fail', code: 'missing_id', message: 'Ticket ID is required' });
+    if (qrEventId && qrEventId !== String(event._id)) {
+      return res.status(404).json({ status: 'fail', code: 'wrong_event', message: 'This ticket is for a different event' });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const host = await Host.findById(decoded.id);
-    if (!host) {
-      return res.status(404).json({ status: "fail", message: "Host not found" });
+    const filter = lookupFilter(event._id, ticketId);
+    const ticket = await Ticket.findOneAndUpdate(
+      { ...filter, isUsed: { $ne: true } },
+      { $set: { isUsed: true, usedAt: new Date(), checkedInBy: req.user._id } },
+      { new: true }
+    ).populate('buyer', 'email firstName lastName phone');
+
+    if (ticket) {
+      return res.status(200).json({ status: 'success', data: { ticket: ticketView(ticket, event) }, message: 'Ticket checked in successfully' });
     }
 
-    const { id } = req.params; // eventId
-    const { ticketId } = req.body;
-    if (!ticketId) {
-      return res.status(400).json({ status: "fail", message: "Ticket ID is required" });
+    // Not checked in: say precisely why.
+    const existing = await Ticket.findOne(filter).populate('buyer', 'email firstName lastName phone');
+    if (existing) {
+      return res.status(409).json({ status: 'fail', code: 'already_used', message: 'Ticket already used', data: { ticket: ticketView(existing, event) } });
     }
-
-    console.log("Checking in ticket:", ticketId, "for event:", id);
-
-    const event = await Event.findById(id).select("host");
-    if (!event) {
-      return res.status(404).json({ status: "fail", message: "Event not found" });
+    if (await Ticket.exists({ ticketId })) {
+      return res.status(404).json({ status: 'fail', code: 'wrong_event', message: 'This ticket is for a different event' });
     }
-
-    if (event.host.toString() !== host._id.toString()) {
-      return res.status(403).json({
-        status: "fail",
-        message: "You are not authorized to check in tickets for this event",
-      });
-    }
-
-    const query = {
-      event: id,
-      $or: [
-        { ticketId: ticketId },
-        ...(mongoose.Types.ObjectId.isValid(ticketId) ? [{ _id: ticketId }] : []),
-      ],
-    };
-
-    const ticket = await Ticket.findOne(query).populate('buyer', 'email firstName lastName');
-    if (!ticket) {
-      return res.status(404).json({ status: "fail", message: "Ticket not found" });
-    }
-
-    if (ticket.isUsed) {
-      return res.status(400).json({ status: "fail", message: "Ticket already used" });
-    }
-
-    if (!ticket.ticketId) {
-      ticket.ticketId = uuidv4();
-    }
-
-    ticket.isUsed = true;
-    ticket.usedAt = new Date();
-    await ticket.save();
-
-    console.log("Ticket checked in:", {
-      ticketId: ticket.ticketId || ticket._id.toString(),
-      buyer: ticket.buyer.email,
-      eventId: ticket.event.toString(),
-    });
-
-    res.status(200).json({
-      status: "success",
-      data: {
-        ticket: {
-          id: ticket.ticketId || ticket._id.toString(),
-          buyer: {
-            email: ticket.buyer.email,
-            firstName: ticket.buyer.firstName,
-            lastName: ticket.buyer.lastName,
-          },
-          status: "used",
-          usedAt: ticket.usedAt,
-        },
-      },
-      message: "Ticket checked in successfully",
-    });
+    return res.status(404).json({ status: 'fail', code: 'not_found', message: 'Ticket not found' });
   } catch (error) {
-    console.error("Error checking in ticket:", error);
-    res.status(500).json({
-      status: "error",
-      message: "Failed to check in ticket",
-    });
+    console.error('Error checking in ticket:', error);
+    res.status(500).json({ status: 'error', message: 'Failed to check in ticket' });
   }
 };
+
+// Undo a check-in (for a mistaken scan). Also atomic: only a ticket that is currently used flips back.
+exports.undoCheckIn = async (req, res) => {
+  try {
+    const event = await loadOwnedEvent(req, res, 'change check-ins');
+    if (!event) return;
+
+    const { ticketId } = parseScan(req.body?.ticketId);
+    if (!ticketId) return res.status(400).json({ status: 'fail', code: 'missing_id', message: 'Ticket ID is required' });
+
+    const filter = lookupFilter(event._id, ticketId);
+    const ticket = await Ticket.findOneAndUpdate(
+      { ...filter, isUsed: true },
+      { $set: { isUsed: false }, $unset: { usedAt: 1, checkedInBy: 1 } },
+      { new: true }
+    ).populate('buyer', 'email firstName lastName phone');
+    if (ticket) {
+      return res.status(200).json({ status: 'success', data: { ticket: ticketView(ticket, event) }, message: 'Check-in undone' });
+    }
+    if (await Ticket.exists(filter)) {
+      return res.status(409).json({ status: 'fail', code: 'not_checked_in', message: 'This ticket is not checked in' });
+    }
+    return res.status(404).json({ status: 'fail', code: 'not_found', message: 'Ticket not found' });
+  } catch (error) {
+    console.error('Error undoing check-in:', error);
+    res.status(500).json({ status: 'error', message: 'Failed to undo check-in' });
+  }
+};
+
 // Get check-ins
 exports.getCheckins = async (req, res) => {
   try {
-    const token = req.headers.authorization?.split(' ')[1];
-    if (!token) {
-      return res.status(401).json({ status: 'fail', message: 'No authentication token provided' });
-    }
+    const event = await loadOwnedEvent(req, res, 'view check-ins');
+    if (!event) return;
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const host = await Host.findById(decoded.id);
-    if (!host) {
-      return res.status(404).json({ status: 'fail', message: 'Host not found' });
-    }
-
-    const event = await Event.findById(req.params.id).select('host');
-    if (!event) {
-      return res.status(404).json({ status: 'fail', message: 'Event not found' });
-    }
-
-    if (event.host.toString() !== host._id.toString()) {
-      return res.status(403).json({
-        status: 'fail',
-        message: 'You are not authorized to view check-ins for this event',
-      });
-    }
-
-    const checkins = await Ticket.find({
-      event: req.params.id,
-      isUsed: true
-    })
+    const checkins = await Ticket.find({ event: event._id, isUsed: true })
+      .sort({ usedAt: -1 })
+      .limit(200)
       .populate('buyer', 'email firstName lastName')
-      .select('usedAt price type');
-
-    const formattedCheckins = checkins.map(ticket => ({
-      guestEmail: ticket.buyer.email,
-      dateTime: ticket.usedAt,
-      count: 1, // Individual ticket
-      amount: ticket.price,
-      status: 'Used'
-    }));
+      .select('usedAt price type name ticketId buyer');
 
     res.status(200).json({
       status: 'success',
-      data: { checkins: formattedCheckins },
+      data: {
+        checkins: checkins.map((ticket) => ({
+          ticketId: ticket.ticketId,
+          guestEmail: ticket.buyer?.email || null,
+          guestName: ticket.buyer ? `${ticket.buyer.firstName} ${ticket.buyer.lastName}`.trim() : null,
+          ticketName: ticket.name,
+          dateTime: ticket.usedAt,
+          count: 1,
+          amount: ticket.price,
+          status: 'Used',
+        })),
+      },
     });
   } catch (error) {
     console.error('Error fetching check-ins:', error);
-    res.status(500).json({
-      status: 'error',
-      message: 'Failed to fetch check-ins',
-    });
+    res.status(500).json({ status: 'error', message: 'Failed to fetch check-ins' });
   }
 };
 
@@ -2019,12 +1991,13 @@ exports.getTicketBuyers = async (req, res) => {
       return {
         _id: ticket._id.toString(),
         ticketId: ticket.ticketId,
-        name: `${ticket.buyer.firstName} ${ticket.buyer.lastName}`,
-        email: ticket.buyer.email,
-        phone: ticket.buyer.phone || '—',
-        location: ticket.buyer.location || '—',
-        checkedIn: ticket.isUsed,
-        groupSize: ticket.groupSize || 1,
+        name: ticket.buyer ? `${ticket.buyer.firstName} ${ticket.buyer.lastName}`.trim() : '—',
+        email: ticket.buyer?.email || '—',
+        phone: ticket.buyer?.phone || '—',
+        location: ticket.buyer?.location || '—',
+        checkedIn: Boolean(ticket.isUsed),
+        groupSize: eventTicket && eventTicket.ticketType === 'Group' ? eventTicket.groupSize : null,
+        ticketName: ticket.name,
         ticketType: ticket.type,
         amountPaid: ticket.price,
         purchaseDate: ticket.purchaseDate || ticket.createdAt,
@@ -2080,11 +2053,11 @@ exports.exportTicketBuyersCSV = async (req, res) => {
 
     // Format data for CSV
     const csvData = tickets.map(ticket => ({
-      'First Name': ticket.buyer.firstName,
-      'Last Name': ticket.buyer.lastName,
-      'Email': ticket.buyer.email,
-      'Phone': ticket.buyer.phone || 'N/A',
-      'Location': ticket.buyer.location || 'N/A',
+      'First Name': ticket.buyer?.firstName || '',
+      'Last Name': ticket.buyer?.lastName || '',
+      'Email': ticket.buyer?.email || '',
+      'Phone': ticket.buyer?.phone || 'N/A',
+      'Location': ticket.buyer?.location || 'N/A',
       'Ticket ID': ticket.ticketId || ticket._id,
       'Ticket Type': ticket.type,
       'Group Size': ticket.groupSize || 1,
